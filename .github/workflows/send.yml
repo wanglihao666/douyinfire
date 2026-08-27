@@ -50,9 +50,12 @@ jobs:
 
       - name: 运行续火花脚本
         run: |
+          set -o pipefail
           echo "=== 开始运行main.py ==="
           python main.py 2>&1 | tee output.log
-          echo "=== main.py退出码: $? ==="
+          EXIT_CODE=$?
+          echo "=== main.py退出码: $EXIT_CODE ==="
+          exit $EXIT_CODE
         env:
           TZ: Asia/Shanghai
 
