@@ -121,13 +121,52 @@ def init_browser(playwright, settings):
     br_cfg = settings["browser"]
     browser = playwright.chromium.launch(
         headless=br_cfg["headless"],
-        args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+        args=[
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-infobars",
+            "--window-size=1280,960",
+        ]
     )
     context = browser.new_context(
         viewport={"width": br_cfg["viewport_width"], "height": br_cfg["viewport_height"]},
         user_agent=br_cfg["user_agent"],
-        locale="zh-CN"
+        locale="zh-CN",
+        timezone_id="Asia/Shanghai",
     )
+
+    # 反检测：注入脚本隐藏自动化特征
+    context.add_init_script("""
+        // 隐藏 webdriver
+        Object.defineProperty(navigator, 'webdriver', {
+            get: () => undefined
+        });
+
+        // 伪造 plugins
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => [1, 2, 3, 4, 5]
+        });
+
+        // 伪造 languages
+        Object.defineProperty(navigator, 'languages', {
+            get: () => ['zh-CN', 'zh', 'en']
+        });
+
+        // 伪造 chrome 对象
+        window.chrome = {
+            runtime: {}
+        };
+
+        // 伪造 permissions
+        const originalQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (parameters) => (
+            parameters.name === 'notifications' ?
+                Promise.resolve({ state: Notification.permission }) :
+                originalQuery(parameters)
+        );
+    """)
 
     # 加载Cookie
     if COOKIE_FILE.exists():
@@ -417,8 +456,41 @@ def run():
             # 打开抖音私信页
             logger.info("正在打开抖音私信页面...")
             page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
-            time.sleep(random.uniform(5, 8))
-
+            
+            # 等待页面加载完成
+            logger.info("等待页面加载...")
+            try:
+                page.wait_for_load_state("networkidle", timeout=30000)
+            except Exception:
+                logger.warning("等待networkidle超时，继续执行")
+            
+            # 额外等待，确保React应用渲染完成
+            time.sleep(random.uniform(8, 12))
+            
+            # 尝试滚动页面触发懒加载
+            try:
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                time.sleep(1)
+                page.evaluate("window.scrollTo(0, 0)")
+                time.sleep(1)
+            except Exception:
+                pass
+            
+            # 等待搜索框出现（最多等待30秒）
+            logger.info("等待搜索框出现...")
+            search_found = False
+            for wait_sel in ['input[placeholder*="搜索"]', 'input[type="text"]', '[contenteditable="true"]', 'div[class*="search"]']:
+                try:
+                    page.wait_for_selector(wait_sel, timeout=10000, state="visible")
+                    logger.info(f"搜索框已出现: {wait_sel}")
+                    search_found = True
+                    break
+                except Exception:
+                    continue
+            
+            if not search_found:
+                logger.warning("未检测到搜索框，页面可能未完全渲染")
+            
             # 截图记录初始页面状态
             take_screenshot(page, "initial_page")
 
