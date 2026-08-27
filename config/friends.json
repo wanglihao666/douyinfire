@@ -1,1 +1,123 @@
-
+{
+  "friends": [
+    {
+      "name": "小宝",
+      "match_type": "nickname",
+      "spark_days": 3,
+      "enabled": true,
+      "note": "火花3天"
+    },
+    {
+      "name": "李为俊",
+      "match_type": "nickname",
+      "spark_days": 437,
+      "enabled": true,
+      "note": "火花437天"
+    },
+    {
+      "name": "大富坤大坤",
+      "match_type": "nickname",
+      "spark_days": 291,
+      "enabled": true,
+      "note": "火花291天"
+    },
+    {
+      "name": "学霸左田总",
+      "match_type": "nickname",
+      "spark_days": 417,
+      "enabled": true,
+      "note": "火花417天"
+    },
+    {
+      "name": "张郑",
+      "match_type": "nickname",
+      "spark_days": 20,
+      "enabled": true,
+      "note": "火花20天"
+    },
+    {
+      "name": "石岩",
+      "match_type": "nickname",
+      "spark_days": 594,
+      "enabled": true,
+      "note": "火花594天"
+    },
+    {
+      "name": "何毅豪",
+      "match_type": "nickname",
+      "spark_days": 3,
+      "enabled": true,
+      "note": "火花3天"
+    },
+    {
+      "name": "王周一",
+      "match_type": "nickname",
+      "spark_days": 398,
+      "enabled": true,
+      "note": "火花398天"
+    },
+    {
+      "name": "胡洋",
+      "match_type": "nickname",
+      "spark_days": 71,
+      "enabled": true,
+      "note": "火花71天"
+    },
+    {
+      "name": "刘金鑫",
+      "match_type": "nickname",
+      "spark_days": 11,
+      "enabled": true,
+      "note": "火花11天"
+    },
+    {
+      "name": "陈果",
+      "match_type": "nickname",
+      "spark_days": 0,
+      "enabled": true,
+      "note": "重燃中1/3"
+    },
+    {
+      "name": "张国仁",
+      "match_type": "nickname",
+      "spark_days": 0,
+      "enabled": true,
+      "note": "重燃中1/3"
+    },
+    {
+      "name": "胡飞",
+      "match_type": "nickname",
+      "spark_days": 0,
+      "enabled": true,
+      "note": "用户指定，无火花"
+    },
+    {
+      "name": "汪沪博",
+      "match_type": "nickname",
+      "spark_days": 0,
+      "enabled": true,
+      "note": "用户指定，无火花"
+    },
+    {
+      "name": "我同意",
+      "match_type": "nickname",
+      "spark_days": 0,
+      "enabled": true,
+      "note": "用户指定，无火花"
+    },
+    {
+      "name": "陈亚坤",
+      "match_type": "nickname",
+      "spark_days": 0,
+      "enabled": true,
+      "note": "水滴3天，用户指定"
+    },
+    {
+      "name": "程俊杰",
+      "match_type": "nickname",
+      "spark_days": 0,
+      "enabled": true,
+      "note": "水滴478天，用户指定"
+    }
+  ]
+}
