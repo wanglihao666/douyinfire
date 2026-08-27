@@ -151,33 +151,107 @@ def search_and_open_chat(page, friend_name, settings):
     # 尝试多种搜索框选择器
     search_selectors = [
         'input[placeholder*="搜索"]',
+        'input[placeholder*="Search"]',
         'input[type="text"]',
         'div[contenteditable="true"][data-placeholder*="搜索"]',
+        'div[class*="search"] input',
+        '[data-e2e*="search"] input',
+        'input[aria-label*="搜索"]',
+        'div[class*="search-input"] input',
     ]
 
     search_box = None
     for sel in search_selectors:
         try:
             loc = page.locator(sel).first
-            if loc.is_visible(timeout=3000):
+            if loc.is_visible(timeout=2000):
                 search_box = loc
+                logger.info(f"找到搜索框: {sel}")
                 break
         except Exception:
             continue
 
     if not search_box:
-        # 兜底：点击页面上的搜索图标
+        # 调试：打印页面上所有可见的input元素
         try:
-            page.click('svg[class*="search"]', timeout=3000)
-            time.sleep(1)
-            search_box = page.locator('input[type="text"]').first
+            inputs = page.locator('input:visible').all()
+            logger.info(f"页面上可见的input数量: {len(inputs)}")
+            for i, inp in enumerate(inputs[:5]):
+                try:
+                    ph = inp.get_attribute('placeholder')
+                    tp = inp.get_attribute('type')
+                    logger.info(f"  input[{i}]: type={tp}, placeholder={ph}")
+                except Exception:
+                    pass
         except Exception as e:
-            logger.error(f"无法找到搜索框: {e}")
-            return False
+            logger.warning(f"调试input信息失败: {e}")
+
+        # 兜底1：尝试点击搜索图标
+        try:
+            # 尝试多种搜索图标选择器
+            icon_selectors = [
+                'svg[class*="search"]',
+                '[class*="search-icon"]',
+                'div[class*="search"] svg',
+                '[data-e2e*="search-icon"]',
+            ]
+            for sel in icon_selectors:
+                try:
+                    page.click(sel, timeout=2000)
+                    logger.info(f"已点击搜索图标: {sel}")
+                    time.sleep(2)
+                    # 点击后尝试找input
+                    search_box = page.locator('input:visible').first
+                    if search_box.is_visible(timeout=2000):
+                        logger.info("点击图标后找到搜索框")
+                        break
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.warning(f"点击搜索图标失败: {e}")
+
+    if not search_box:
+        # 兜底2：用JavaScript查找搜索框并点击
+        try:
+            page.evaluate("""
+                () => {
+                    // 查找所有包含搜索图标的元素
+                    const allElements = document.querySelectorAll('*');
+                    for (const el of allElements) {
+                        if (el.offsetParent !== null) {
+                            const style = window.getComputedStyle(el);
+                            if (style.cursor === 'pointer' && 
+                                (el.className.includes('search') || el.getAttribute('data-e2e')?.includes('search'))) {
+                                el.click();
+                                return 'clicked: ' + el.tagName + '.' + el.className;
+                            }
+                        }
+                    }
+                    return 'not found';
+                }
+            """)
+            time.sleep(2)
+            search_box = page.locator('input:visible').first
+            if search_box.is_visible(timeout=2000):
+                logger.info("JavaScript点击后找到搜索框")
+        except Exception as e:
+            logger.warning(f"JavaScript查找搜索框失败: {e}")
+
+    if not search_box:
+        logger.error("无法找到搜索框")
+        take_screenshot(page, f"search_box_not_found_{friend_name}")
+        return False
 
     # 清空并输入好友名
     search_box.click()
-    search_box.fill("")
+    time.sleep(0.5)
+    # 用ctrl+a全选然后删除
+    try:
+        page.keyboard.press("Control+A")
+        time.sleep(0.2)
+        page.keyboard.press("Backspace")
+    except Exception:
+        pass
     human_typing(page, search_box._selector if hasattr(search_box, '_selector') else search_selectors[0], friend_name, settings)
     time.sleep(random.uniform(1.5, 3))
 
