@@ -1,0 +1,49 @@
+name: 抖音自动续火花
+
+on:
+  schedule:
+    # UTC时间 17:00 = 北京时间 01:00（阴间时间窗口开始）
+    - cron: '0 17 * * *'
+  workflow_dispatch:  # 支持手动触发
+
+jobs:
+  send-messages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+
+      - name: 写入Cookie
+        env:
+          DOUYIN_COOKIES: ${{ secrets.DOUYIN_COOKIES }}
+        run: |
+          echo "$DOUYIN_COOKIES" > cookies.json
+          echo "Cookie已写入"
+
+      - name: 运行续火花脚本
+        run: |
+          python main.py
+        env:
+          TZ: Asia/Shanghai
+
+      - name: 上传日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ github.run_id }}
+          path: |
+            logs/
+            screenshots/
+          retention-days: 7
