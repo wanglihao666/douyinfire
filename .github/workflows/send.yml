@@ -32,9 +32,27 @@ jobs:
           echo "$DOUYIN_COOKIES" > cookies.json
           echo "Cookie已写入"
 
+      - name: 调试检查
+        run: |
+          echo "=== 文件列表 ==="
+          ls -la
+          echo "=== config目录 ==="
+          ls -la config/
+          echo "=== cookies.json大小 ==="
+          wc -c cookies.json
+          echo "=== cookies.json前100字符 ==="
+          head -c 100 cookies.json
+          echo ""
+          echo "=== Python版本 ==="
+          python --version
+          echo "=== 已安装包 ==="
+          pip list | grep -i -E "playwright|requests"
+
       - name: 运行续火花脚本
         run: |
-          python main.py
+          echo "=== 开始运行main.py ==="
+          python main.py 2>&1 | tee output.log
+          echo "=== main.py退出码: $? ==="
         env:
           TZ: Asia/Shanghai
 
@@ -46,4 +64,5 @@ jobs:
           path: |
             logs/
             screenshots/
+            output.log
           retention-days: 7
