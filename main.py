@@ -172,19 +172,20 @@ def search_and_open_chat(page, friend_name, settings):
             continue
 
     if not search_box:
-        # 调试：打印页面上所有可见的input元素
+        # 调试：打印页面上所有可见的input和contenteditable元素
         try:
             inputs = page.locator('input:visible').all()
-            logger.info(f"页面上可见的input数量: {len(inputs)}")
-            for i, inp in enumerate(inputs[:5]):
+            editables = page.locator('[contenteditable="true"]:visible').all()
+            logger.info(f"页面上可见的input数量: {len(inputs)}, contenteditable数量: {len(editables)}")
+            for i, ed in enumerate(editables[:5]):
                 try:
-                    ph = inp.get_attribute('placeholder')
-                    tp = inp.get_attribute('type')
-                    logger.info(f"  input[{i}]: type={tp}, placeholder={ph}")
+                    ph = ed.get_attribute('data-placeholder')
+                    cls = ed.get_attribute('class')
+                    logger.info(f"  editable[{i}]: data-placeholder={ph}, class={cls[:50] if cls else 'None'}")
                 except Exception:
                     pass
         except Exception as e:
-            logger.warning(f"调试input信息失败: {e}")
+            logger.warning(f"调试元素信息失败: {e}")
 
         # 兜底1：尝试点击搜索图标
         try:
@@ -194,46 +195,72 @@ def search_and_open_chat(page, friend_name, settings):
                 '[class*="search-icon"]',
                 'div[class*="search"] svg',
                 '[data-e2e*="search-icon"]',
+                'div[class*="search"]',
+                '[class*="search-box"]',
             ]
             for sel in icon_selectors:
                 try:
-                    page.click(sel, timeout=2000)
-                    logger.info(f"已点击搜索图标: {sel}")
-                    time.sleep(2)
-                    # 点击后尝试找input
-                    search_box = page.locator('input:visible').first
-                    if search_box.is_visible(timeout=2000):
-                        logger.info("点击图标后找到搜索框")
-                        break
+                    loc = page.locator(sel).first
+                    if loc.is_visible(timeout=2000):
+                        loc.click()
+                        logger.info(f"已点击搜索图标: {sel}")
+                        time.sleep(2)
+                        # 点击后尝试找input或contenteditable
+                        for input_sel in ['input:visible', '[contenteditable="true"]:visible']:
+                            try:
+                                search_box = page.locator(input_sel).first
+                                if search_box.is_visible(timeout=2000):
+                                    logger.info(f"点击图标后找到搜索框: {input_sel}")
+                                    break
+                            except Exception:
+                                continue
+                        if search_box:
+                            break
                 except Exception:
                     continue
         except Exception as e:
             logger.warning(f"点击搜索图标失败: {e}")
 
     if not search_box:
-        # 兜底2：用JavaScript查找搜索框并点击
+        # 兜底2：用JavaScript查找搜索框并点击（修复className问题）
         try:
-            page.evaluate("""
+            result = page.evaluate("""
                 () => {
                     // 查找所有包含搜索图标的元素
-                    const allElements = document.querySelectorAll('*');
+                    const allElements = document.querySelectorAll('div, span, button');
                     for (const el of allElements) {
                         if (el.offsetParent !== null) {
-                            const style = window.getComputedStyle(el);
-                            if (style.cursor === 'pointer' && 
-                                (el.className.includes('search') || el.getAttribute('data-e2e')?.includes('search'))) {
+                            const cls = el.className || '';
+                            const clsStr = typeof cls === 'string' ? cls : (cls.baseVal || '');
+                            if (clsStr.includes('search') || 
+                                el.getAttribute('data-e2e')?.includes('search')) {
                                 el.click();
-                                return 'clicked: ' + el.tagName + '.' + el.className;
+                                return 'clicked: ' + el.tagName + '.' + clsStr.substring(0, 50);
                             }
+                        }
+                    }
+                    // 也尝试查找包含"搜索"文字的可点击元素
+                    const clickables = document.querySelectorAll('[class*="click"], div[role="button"], button');
+                    for (const el of clickables) {
+                        if (el.offsetParent !== null && el.textContent.includes('搜索')) {
+                            el.click();
+                            return 'clicked text: ' + el.textContent.trim();
                         }
                     }
                     return 'not found';
                 }
             """)
+            logger.info(f"JavaScript查找结果: {result}")
             time.sleep(2)
-            search_box = page.locator('input:visible').first
-            if search_box.is_visible(timeout=2000):
-                logger.info("JavaScript点击后找到搜索框")
+            # 尝试找input或contenteditable
+            for input_sel in ['input:visible', '[contenteditable="true"]:visible']:
+                try:
+                    search_box = page.locator(input_sel).first
+                    if search_box.is_visible(timeout=2000):
+                        logger.info(f"JavaScript点击后找到搜索框: {input_sel}")
+                        break
+                except Exception:
+                    continue
         except Exception as e:
             logger.warning(f"JavaScript查找搜索框失败: {e}")
 
