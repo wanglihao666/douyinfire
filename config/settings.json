@@ -1,1 +1,59 @@
-
+{
+  "message": {
+    "source": "hitokoto_api",
+    "hitokoto_api": "https://v1.hitokoto.cn/",
+    "hitokoto_params": {
+      "c": ["a", "b", "c", "d", "h", "i", "k"],
+      "encode": "json"
+    },
+    "fallback_messages": [
+      "月色与雪色之间，你是第三种绝色。",
+      "凌晨四点钟，看到海棠花未眠。",
+      "人生如逆旅，我亦是行人。",
+      "万物皆有裂痕，那是光照进来的地方。",
+      "夜是那种藏起所有情绪，又在凌晨三点全部放出来的东西。",
+      "我们都是阴沟里的虫子，但总还是得有人仰望星空。",
+      "此心安处是吾乡。",
+      "凡是过往，皆为序章。",
+      "未经审视的人生不值得过。",
+      "世界上只有一种英雄主义，就是看清生活的真相之后依然热爱生活。"
+    ],
+    "max_length": 50,
+    "add_emoji": true,
+    "emoji_pool": ["🌙", "✨", "🔥", "💫", "🌌", "☕", "📖", "🎵", "🌊", "🍃"]
+  },
+  "schedule": {
+    "timezone": "Asia/Shanghai",
+    "send_window_start": "01:00",
+    "send_window_end": "04:00",
+    "random_delay_per_friend_min": 30,
+    "random_delay_per_friend_max": 120,
+    "github_action_cron": "0 17 * * *"
+  },
+  "humanizer": {
+    "enabled": true,
+    "typing_speed_min_ms": 40,
+    "typing_speed_max_ms": 120,
+    "pre_send_pause_min_s": 3,
+    "pre_send_pause_max_s": 15,
+    "random_scroll_before_send": true,
+    "simulate_reading_time_s": 5
+  },
+  "browser": {
+    "headless": true,
+    "timeout_ms": 30000,
+    "viewport_width": 1280,
+    "viewport_height": 960,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  },
+  "retry": {
+    "max_retries": 2,
+    "retry_delay_s": 10
+  },
+  "logging": {
+    "level": "INFO",
+    "save_screenshot": true,
+    "screenshot_dir": "screenshots",
+    "log_dir": "logs"
+  }
+}
