@@ -316,15 +316,60 @@ def run():
             # 打开抖音私信页
             logger.info("正在打开抖音私信页面...")
             page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
-            time.sleep(random.uniform(3, 6))
+            time.sleep(random.uniform(5, 8))
 
-            # 检查是否需要登录
-            if "login" in page.url or page.locator('text=登录').first.is_visible():
-                logger.error("未登录或Cookie已失效，请重新获取Cookie")
+            # 截图记录初始页面状态
+            take_screenshot(page, "initial_page")
+
+            # 检查是否需要登录（更严格的检查：URL包含login或出现登录表单）
+            current_url = page.url
+            logger.info(f"当前URL: {current_url}")
+            if "login" in current_url or "passport" in current_url:
+                logger.error("跳转到登录页，Cookie已失效，请重新获取Cookie")
                 take_screenshot(page, "login_required")
                 return False
 
+            # 检查页面是否有登录按钮（且没有聊天列表）
+            try:
+                has_chat_list = page.locator('[class*="conversation"], [class*="chat-list"], [data-e2e*="conversation"]').count() > 0
+                has_login_btn = page.locator('button:has-text("登录"), a:has-text("登录")').count() > 0
+                if has_login_btn and not has_chat_list:
+                    logger.error("页面显示登录按钮且无聊天列表，Cookie可能已失效")
+                    take_screenshot(page, "login_required")
+                    return False
+            except Exception as e:
+                logger.warning(f"登录状态检查异常: {e}")
+
             logger.info("抖音私信页面加载成功")
+
+            # 处理可能的弹窗（如"是否保存登录信息"）
+            logger.info("检查并处理弹窗...")
+            try:
+                # 处理"是否保存登录信息"弹窗 - 点击取消
+                cancel_selectors = [
+                    'button:has-text("取消")',
+                    'div:has-text("取消")',
+                    '[class*="cancel"]',
+                ]
+                for sel in cancel_selectors:
+                    try:
+                        btn = page.locator(sel).first
+                        if btn.is_visible(timeout=2000):
+                            btn.click()
+                            logger.info(f"已点击取消按钮: {sel}")
+                            time.sleep(1)
+                            break
+                    except Exception:
+                        continue
+
+                # 处理其他可能的弹窗（按ESC关闭）
+                page.keyboard.press("Escape")
+                time.sleep(1)
+            except Exception as e:
+                logger.warning(f"弹窗处理异常: {e}")
+
+            # 截图记录处理弹窗后的状态
+            take_screenshot(page, "after_popup")
 
             # 逐个好友发送
             success_count = 0
