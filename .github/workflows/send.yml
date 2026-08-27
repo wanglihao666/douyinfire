@@ -29,8 +29,13 @@ jobs:
         env:
           DOUYIN_COOKIES: ${{ secrets.DOUYIN_COOKIES }}
         run: |
-          echo "$DOUYIN_COOKIES" > cookies.json
+          echo "Cookie长度: ${#DOUYIN_COOKIES}"
+          echo "Cookie前50字符: ${DOUYIN_COOKIES:0:50}"
+          # 用Python写入，避免shell转义问题
+          python -c "import os; open('cookies.json', 'w', encoding='utf-8').write(os.environ['DOUYIN_COOKIES'])"
           echo "Cookie已写入"
+          # 验证JSON格式
+          python -c "import json; data=json.load(open('cookies.json')); print(f'JSON验证成功，共{len(data)}条Cookie')"
 
       - name: 调试检查
         run: |
