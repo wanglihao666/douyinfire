@@ -1,0 +1,26 @@
+# Cookie和敏感信息
+cookies.json
+*.cookie
+
+# 日志和截图
+logs/
+screenshots/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 系统
+.DS_Store
+Thumbs.db
