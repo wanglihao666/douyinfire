@@ -24,11 +24,11 @@
   },
   "schedule": {
     "timezone": "Asia/Shanghai",
-    "send_window_start": "01:00",
-    "send_window_end": "04:00",
+    "send_window_start": "07:00",
+    "send_window_end": "09:00",
     "random_delay_per_friend_min": 30,
     "random_delay_per_friend_max": 120,
-    "github_action_cron": "0 17 * * *"
+    "github_action_cron": "0 23 * * *"
   },
   "humanizer": {
     "enabled": true,
