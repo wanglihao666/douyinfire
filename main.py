@@ -184,180 +184,76 @@ def init_browser(playwright, settings):
     return browser, context, page
 
 def search_and_open_chat(page, friend_name, settings):
-    """搜索好友并打开聊天窗口"""
-    logger.info(f"正在搜索好友: {friend_name}")
+    """打开与好友的聊天窗口 - 直接点击左侧会话列表，搜索作为兜底"""
+    logger.info(f"正在打开与 {friend_name} 的聊天窗口")
 
-    # 尝试多种搜索框选择器
-    search_selectors = [
-        'input[placeholder*="搜索"]',
-        'input[placeholder*="Search"]',
-        'input[type="text"]',
-        'div[contenteditable="true"][data-placeholder*="搜索"]',
-        'div[class*="search"] input',
-        '[data-e2e*="search"] input',
-        'input[aria-label*="搜索"]',
-        'div[class*="search-input"] input',
-    ]
-
-    search_box = None
-    for sel in search_selectors:
-        try:
-            loc = page.locator(sel).first
-            if loc.is_visible(timeout=2000):
-                search_box = loc
-                logger.info(f"找到搜索框: {sel}")
-                break
-        except Exception:
-            continue
-
-    if not search_box:
-        # 调试：打印页面上所有可见的input和contenteditable元素
-        try:
-            inputs = page.locator('input:visible').all()
-            editables = page.locator('[contenteditable="true"]:visible').all()
-            logger.info(f"页面上可见的input数量: {len(inputs)}, contenteditable数量: {len(editables)}")
-            for i, ed in enumerate(editables[:5]):
-                try:
-                    ph = ed.get_attribute('data-placeholder')
-                    cls = ed.get_attribute('class')
-                    logger.info(f"  editable[{i}]: data-placeholder={ph}, class={cls[:50] if cls else 'None'}")
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.warning(f"调试元素信息失败: {e}")
-
-        # 兜底1：尝试点击搜索图标
-        try:
-            # 尝试多种搜索图标选择器
-            icon_selectors = [
-                'svg[class*="search"]',
-                '[class*="search-icon"]',
-                'div[class*="search"] svg',
-                '[data-e2e*="search-icon"]',
-                'div[class*="search"]',
-                '[class*="search-box"]',
-            ]
-            for sel in icon_selectors:
-                try:
-                    loc = page.locator(sel).first
-                    if loc.is_visible(timeout=2000):
-                        loc.click()
-                        logger.info(f"已点击搜索图标: {sel}")
-                        time.sleep(2)
-                        # 点击后尝试找input或contenteditable
-                        for input_sel in ['input:visible', '[contenteditable="true"]:visible']:
-                            try:
-                                search_box = page.locator(input_sel).first
-                                if search_box.is_visible(timeout=2000):
-                                    logger.info(f"点击图标后找到搜索框: {input_sel}")
-                                    break
-                            except Exception:
-                                continue
-                        if search_box:
-                            break
-                except Exception:
-                    continue
-        except Exception as e:
-            logger.warning(f"点击搜索图标失败: {e}")
-
-    if not search_box:
-        # 兜底2：用JavaScript查找搜索框并点击（修复className问题）
-        try:
-            result = page.evaluate("""
-                () => {
-                    // 查找所有包含搜索图标的元素
-                    const allElements = document.querySelectorAll('div, span, button');
-                    for (const el of allElements) {
-                        if (el.offsetParent !== null) {
-                            const cls = el.className || '';
-                            const clsStr = typeof cls === 'string' ? cls : (cls.baseVal || '');
-                            if (clsStr.includes('search') || 
-                                el.getAttribute('data-e2e')?.includes('search')) {
-                                el.click();
-                                return 'clicked: ' + el.tagName + '.' + clsStr.substring(0, 50);
-                            }
-                        }
-                    }
-                    // 也尝试查找包含"搜索"文字的可点击元素
-                    const clickables = document.querySelectorAll('[class*="click"], div[role="button"], button');
-                    for (const el of clickables) {
-                        if (el.offsetParent !== null && el.textContent.includes('搜索')) {
-                            el.click();
-                            return 'clicked text: ' + el.textContent.trim();
-                        }
-                    }
-                    return 'not found';
-                }
-            """)
-            logger.info(f"JavaScript查找结果: {result}")
-            time.sleep(2)
-            # 尝试找input或contenteditable
-            for input_sel in ['input:visible', '[contenteditable="true"]:visible']:
-                try:
-                    search_box = page.locator(input_sel).first
-                    if search_box.is_visible(timeout=2000):
-                        logger.info(f"JavaScript点击后找到搜索框: {input_sel}")
-                        break
-                except Exception:
-                    continue
-        except Exception as e:
-            logger.warning(f"JavaScript查找搜索框失败: {e}")
-
-    if not search_box:
-        logger.error("无法找到搜索框")
-        take_screenshot(page, f"search_box_not_found_{friend_name}")
-        return False
-
-    # 清空并输入好友名
-    search_box.click()
-    time.sleep(0.5)
-    # 用ctrl+a全选然后删除
-    try:
-        page.keyboard.press("Control+A")
-        time.sleep(0.2)
-        page.keyboard.press("Backspace")
-    except Exception:
-        pass
-    human_typing(page, search_box._selector if hasattr(search_box, '_selector') else search_selectors[0], friend_name, settings)
-    time.sleep(random.uniform(1.5, 3))
-
-    # 点击搜索结果中的好友
-    result_selectors = [
+    # 主方案：直接点击左侧聊天列表中的会话
+    conversation_selectors = [
         f'//div[contains(@class,"conversation") and .//text()="{friend_name}"]',
-        f'//div[contains(text(),"{friend_name}") and contains(@class,"name")]',
-        f'div[data-e2e*="conversation"]:has-text("{friend_name}")',
+        f'//div[contains(@class,"Conversation") and .//text()="{friend_name}"]',
+        f'//div[contains(@class,"chat") and .//text()="{friend_name}"]',
     ]
 
-    for sel in result_selectors:
+    for sel in conversation_selectors:
         try:
             loc = page.locator(sel).first
             if loc.is_visible(timeout=3000):
                 loc.click()
-                logger.info(f"已打开与 {friend_name} 的聊天窗口")
+                logger.info(f"已点击聊天列表中的 {friend_name}")
                 time.sleep(random.uniform(2, 4))
+                # 验证聊天窗口打开（出现消息输入框）
+                try:
+                    page.locator('[contenteditable="true"]').first.wait_for(state="visible", timeout=8000)
+                    logger.info(f"聊天窗口已打开: {friend_name}")
+                except Exception:
+                    logger.warning(f"聊天窗口打开但未检测到输入框: {friend_name}")
                 return True
         except Exception:
             continue
 
-    # 兜底：按Enter选择第一个结果
+    # 兜底：搜索好友
+    logger.info(f"聊天列表未找到 {friend_name}，尝试搜索")
     try:
-        page.press('input[type="text"]', 'Enter')
-        time.sleep(2)
-        logger.info(f"通过Enter键尝试打开 {friend_name} 的聊天")
-        return True
+        search_box = page.locator('input[placeholder*="搜索"]').first
+        if search_box.is_visible(timeout=3000):
+            search_box.click()
+            time.sleep(0.5)
+            search_box.fill(friend_name)
+            time.sleep(2)
+            # 点击搜索结果中的会话或发消息
+            for sel in [
+                f'//div[contains(@class,"conversation") and .//text()="{friend_name}"]',
+                'button:has-text("发消息")',
+            ]:
+                try:
+                    loc = page.locator(sel).first
+                    if loc.is_visible(timeout=3000):
+                        loc.click()
+                        logger.info(f"通过搜索打开 {friend_name}")
+                        time.sleep(3)
+                        return True
+                except Exception:
+                    continue
+            # 按Enter
+            search_box.press("Enter")
+            time.sleep(3)
+            logger.info(f"通过搜索+Enter打开 {friend_name}")
+            return True
     except Exception as e:
         logger.error(f"无法打开与 {friend_name} 的聊天: {e}")
+        take_screenshot(page, f"open_chat_fail_{friend_name}")
         return False
+
 
 def send_message(page, message, settings):
     """在当前聊天窗口发送消息"""
     logger.info(f"准备发送消息: {message[:30]}...")
 
-    # 抖音私信输入框是 Draft.js 编辑器，contenteditable=true
+    # 抖音私信输入框：contenteditable=true，placeholder=发送消息
     input_selectors = [
-        'div[contenteditable="true"][data-placeholder*="发送"]',
-        'div[contenteditable="true"][class*="draft"]',
-        'div[contenteditable="true"]',
+        '[contenteditable="true"][data-placeholder*="发送"]',
+        '[contenteditable="true"][data-placeholder*="发"]',
+        '[contenteditable="true"]',
         'div.public-DraftEditor-content',
     ]
 
@@ -373,54 +269,48 @@ def send_message(page, message, settings):
 
     if not input_box:
         logger.error("无法找到消息输入框")
+        take_screenshot(page, "input_not_found")
         return False
 
     # 真人模拟：先停顿，模拟看消息
     human_pause(settings)
 
-    # 模拟打字
+    # 点击输入框聚焦
     input_box.click()
     time.sleep(random.uniform(0.3, 0.8))
-    for char in message:
-        input_box.type(char, delay=random.randint(
-            settings["humanizer"]["typing_speed_min_ms"],
-            settings["humanizer"]["typing_speed_max_ms"]
-        ))
+
+    # 用键盘逐字输入（模拟真人打字）
+    try:
+        for char in message:
+            page.keyboard.type(char, delay=random.randint(
+                settings["humanizer"]["typing_speed_min_ms"],
+                settings["humanizer"]["typing_speed_max_ms"]
+            ))
+    except Exception as e:
+        logger.warning(f"键盘逐字输入异常: {e}，改用插入文本")
+        try:
+            page.keyboard.insert_text(message)
+        except Exception as e2:
+            logger.error(f"插入文本失败: {e2}")
+            return False
 
     # 发送前停顿
     human_pause(settings)
 
-    # 发送：尝试点击发送按钮或按Enter
+    # 发送：按Enter（抖音私信默认Enter发送）
     sent = False
-    send_button_selectors = [
-        'button[aria-label*="发送"]',
-        'div[class*="send"]',
-        'svg[class*="send"]',
-    ]
-
-    for sel in send_button_selectors:
-        try:
-            btn = page.locator(sel).first
-            if btn.is_visible(timeout=2000):
-                btn.click()
-                sent = True
-                logger.info("通过发送按钮发送消息")
-                break
-        except Exception:
-            continue
-
-    if not sent:
-        try:
-            input_box.press("Enter")
-            sent = True
-            logger.info("通过Enter键发送消息")
-        except Exception as e:
-            logger.error(f"发送失败: {e}")
+    try:
+        page.keyboard.press("Enter")
+        sent = True
+        logger.info("通过Enter键发送消息")
+    except Exception as e:
+        logger.error(f"Enter发送失败: {e}")
 
     if sent:
         time.sleep(random.uniform(2, 4))
         logger.info("消息发送成功")
     return sent
+
 
 def take_screenshot(page, friend_name):
     """截图留证"""
@@ -449,13 +339,40 @@ def run():
     logger.info(f"当前时间: {now.strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"发送窗口: {sched['send_window_start']} - {sched['send_window_end']}")
 
+    # 发送窗口判断：只有当前时间在窗口内才发送（配合频繁的定时触发）
+    def in_send_window(t, win_start, win_end):
+        hm = t.strftime("%H:%M")
+        if win_start <= win_end:
+            return win_start <= hm <= win_end
+        else:  # 跨天窗口，如 23:00 - 02:00
+            return hm >= win_start or hm <= win_end
+
+    if not in_send_window(now, sched["send_window_start"], sched["send_window_end"]):
+        logger.info(f"当前时间 {now.strftime('%H:%M')} 不在发送窗口 {sched['send_window_start']}-{sched['send_window_end']} 内，跳过本次")
+        return False
+
     with sync_playwright() as p:
         browser, context, page = init_browser(p, settings)
 
         try:
-            # 打开抖音私信页
+            # 打开抖音私信页（带重试，避免网络波动）
             logger.info("正在打开抖音私信页面...")
-            page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
+            page.set_default_timeout(60000)
+            page_loaded = False
+            for attempt in range(3):
+                try:
+                    page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded", timeout=60000)
+                    page_loaded = True
+                    break
+                except Exception as e:
+                    logger.warning(f"打开抖音第{attempt+1}次失败: {str(e)[:60]}")
+                    if attempt == 2:
+                        logger.error("抖音页面打开失败")
+                        take_screenshot(page, "page_open_fail")
+                        return False
+                    time.sleep(5)
+            if not page_loaded:
+                return False
             
             # 等待页面加载完成
             logger.info("等待页面加载...")
