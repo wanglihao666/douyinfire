@@ -339,7 +339,8 @@ def run():
     logger.info(f"当前时间: {now.strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"发送窗口: {sched['send_window_start']} - {sched['send_window_end']}")
 
-    # 发送窗口判断：只有当前时间在窗口内才发送（配合频繁的定时触发）
+    # 发送窗口判断：只有当前时间在窗口内且距窗口开始不超过40分钟才发送
+    # 这样配合多个触发点，即使某次触发延迟也能补救，且避免窗口内重复发送
     def in_send_window(t, win_start, win_end):
         hm = t.strftime("%H:%M")
         if win_start <= win_end:
@@ -347,9 +348,18 @@ def run():
         else:  # 跨天窗口，如 23:00 - 02:00
             return hm >= win_start or hm <= win_end
 
+    now = datetime.now()
     if not in_send_window(now, sched["send_window_start"], sched["send_window_end"]):
         logger.info(f"当前时间 {now.strftime('%H:%M')} 不在发送窗口 {sched['send_window_start']}-{sched['send_window_end']} 内，跳过本次")
         return False
+
+    # 距窗口开始不超过40分钟才发送（避免窗口内多次触发重复发送）
+    ws = datetime.strptime(sched["send_window_start"], "%H:%M")
+    mins_from_start = (now.hour * 60 + now.minute) - (ws.hour * 60 + ws.minute)
+    if mins_from_start > 40:
+        logger.info(f"当前时间距窗口开始已超过40分钟（{mins_from_start}分钟），可能是重复触发，跳过本次")
+        return False
+    logger.info(f"距窗口开始 {mins_from_start} 分钟，开始发送")
 
     with sync_playwright() as p:
         browser, context, page = init_browser(p, settings)
