@@ -1,8 +1,6 @@
 name: 抖音自动续火花
 
 on:
-  schedule:
-    - cron: '5 23 * * *' # 香港及北京时间 07:05
   workflow_dispatch:
     inputs:
       recipient_index:
@@ -19,7 +17,6 @@ concurrency:
 
 jobs:
   send-messages:
-    if: github.event_name == 'workflow_dispatch' || (vars.DOUYIN_SCHEDULE_ENABLED == 'true' && github.run_attempt == 1)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
