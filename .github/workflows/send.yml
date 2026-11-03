@@ -1,81 +1,70 @@
 name: 抖音自动续火花
 
 on:
-  schedule:
-    # 发送窗口：北京时间 07:00-09:00（UTC 23:00-01:00）
-    # 在窗口开始前后设多个触发点，脚本内判断"距窗口开始40分钟内才发送"
-    # 保证即使某次触发延迟/跳过，其他触发点也能补救，且不重复发送
-    - cron: '55 22 * * *'   # 北京 06:55（窗口前，通常跳过）
-    - cron: '0 23 * * *'    # 北京 07:00（窗口开始，主触发）
-    - cron: '30 23 * * *'   # 北京 07:30（补救）
-    - cron: '0 0 * * *'     # 北京 08:00（补救）
-  workflow_dispatch:  # 支持手动触发
+  workflow_dispatch:
+    inputs:
+      recipient_index:
+        description: "0 仅检查登录；大于 0 时给启用好友列表中的对应序号发送一条私信"
+        type: number
+        default: 0
+
+permissions:
+  contents: read
+
+concurrency:
+  group: douyin-fire
+  cancel-in-progress: false
 
 jobs:
   send-messages:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      TZ: Asia/Shanghai
+      DOUYIN_RECIPIENT_INDEX: ${{ inputs.recipient_index }}
 
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: 设置Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: 安装依赖
         run: |
           pip install -r requirements.txt
-          playwright install chromium
+          playwright install --with-deps chromium
 
-      - name: 写入Cookie
+      - name: 验证并写入 Cookie
         env:
           DOUYIN_COOKIES: ${{ secrets.DOUYIN_COOKIES }}
         run: |
-          echo "Cookie长度: ${#DOUYIN_COOKIES}"
-          echo "Cookie前50字符: ${DOUYIN_COOKIES:0:50}"
-          # 用Python写入，避免shell转义问题
-          python -c "import os; open('cookies.json', 'w', encoding='utf-8').write(os.environ['DOUYIN_COOKIES'])"
-          echo "Cookie已写入"
-          # 验证JSON格式
-          python -c "import json; data=json.load(open('cookies.json')); print(f'JSON验证成功，共{len(data)}条Cookie')"
+          umask 077
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
 
-      - name: 调试检查
+          try:
+              cookies = json.loads(os.environ.get("DOUYIN_COOKIES", ""))
+          except ValueError:
+              raise SystemExit("请在 Actions Secret 中设置有效的 DOUYIN_COOKIES。")
+          if not isinstance(cookies, list) or not cookies or not all(isinstance(cookie, dict) for cookie in cookies):
+              raise SystemExit("DOUYIN_COOKIES 必须是非空的 Cookie 对象列表。")
+          Path("cookies.json").write_text(json.dumps(cookies), encoding="utf-8")
+          PY
+
+      - name: 检查登录或试发一条私信
         run: |
-          echo "=== 文件列表 ==="
-          ls -la
-          echo "=== config目录 ==="
-          ls -la config/
-          echo "=== cookies.json大小 ==="
-          wc -c cookies.json
-          echo "=== cookies.json前100字符 ==="
-          head -c 100 cookies.json
-          echo ""
-          echo "=== Python版本 ==="
-          python --version
-          echo "=== 已安装包 ==="
-          pip list | grep -i -E "playwright|requests"
+          if python main.py > /dev/null 2>&1; then
+            echo "抖音任务通过。"
+          else
+            echo "::error::抖音任务失败。请检查登录状态、收件人序号、发送窗口和抖音页面。"
+            exit 1
+          fi
 
-      - name: 运行续火花脚本
-        run: |
-          set -o pipefail
-          echo "=== 开始运行main.py ==="
-          python main.py 2>&1 | tee output.log
-          EXIT_CODE=$?
-          echo "=== main.py退出码: $EXIT_CODE ==="
-          exit $EXIT_CODE
-        env:
-          TZ: Asia/Shanghai
-
-      - name: 上传日志
+      - name: 清理 Cookie
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: logs-${{ github.run_id }}
-          path: |
-            logs/
-            screenshots/
-            output.log
-          retention-days: 7
+        run: rm -f -- cookies.json
