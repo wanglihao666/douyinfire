@@ -183,66 +183,22 @@ def init_browser(playwright, settings):
     page.set_default_timeout(br_cfg["timeout_ms"])
     return browser, context, page
 
-def search_and_open_chat(page, friend_name, settings):
-    """打开与好友的聊天窗口 - 直接点击左侧会话列表，搜索作为兜底"""
+def search_and_open_chat(page, friend_name):
+    """打开唯一匹配好友名称的会话"""
     logger.info(f"正在打开与 {friend_name} 的聊天窗口")
 
-    # 主方案：直接点击左侧聊天列表中的会话
-    conversation_selectors = [
-        f'//div[contains(@class,"conversation") and .//text()="{friend_name}"]',
-        f'//div[contains(@class,"Conversation") and .//text()="{friend_name}"]',
-        f'//div[contains(@class,"chat") and .//text()="{friend_name}"]',
-    ]
-
-    for sel in conversation_selectors:
-        try:
-            loc = page.locator(sel).first
-            if loc.is_visible(timeout=3000):
-                loc.click()
-                logger.info(f"已点击聊天列表中的 {friend_name}")
-                time.sleep(random.uniform(2, 4))
-                # 验证聊天窗口打开（出现消息输入框）
-                try:
-                    page.locator('[contenteditable="true"]').first.wait_for(state="visible", timeout=8000)
-                    logger.info(f"聊天窗口已打开: {friend_name}")
-                except Exception:
-                    logger.warning(f"聊天窗口打开但未检测到输入框: {friend_name}")
-                return True
-        except Exception:
-            continue
-
-    # 兜底：搜索好友
-    logger.info(f"聊天列表未找到 {friend_name}，尝试搜索")
+    conversations = page.locator('[class*="conversation"], [class*="Conversation"]').filter(
+        has=page.get_by_text(friend_name, exact=True)
+    )
     try:
-        search_box = page.locator('input[placeholder*="搜索"]').first
-        if search_box.is_visible(timeout=3000):
-            search_box.click()
-            time.sleep(0.5)
-            search_box.fill(friend_name)
-            time.sleep(2)
-            # 点击搜索结果中的会话或发消息
-            for sel in [
-                f'//div[contains(@class,"conversation") and .//text()="{friend_name}"]',
-                'button:has-text("发消息")',
-            ]:
-                try:
-                    loc = page.locator(sel).first
-                    if loc.is_visible(timeout=3000):
-                        loc.click()
-                        logger.info(f"通过搜索打开 {friend_name}")
-                        time.sleep(3)
-                        return True
-                except Exception:
-                    continue
-            # 按Enter
-            search_box.press("Enter")
-            time.sleep(3)
-            logger.info(f"通过搜索+Enter打开 {friend_name}")
-            return True
-    except Exception as e:
-        logger.error(f"无法打开与 {friend_name} 的聊天: {e}")
-        take_screenshot(page, f"open_chat_fail_{friend_name}")
+        conversations.click(timeout=8000)
+        page.locator('[contenteditable="true"][data-placeholder*="发"]').wait_for(
+            state="visible", timeout=8000
+        )
+    except Exception:
+        logger.error("无法唯一定位好友会话或消息输入框，跳过发送")
         return False
+    return True
 
 
 def send_message(page, message, settings):
@@ -251,16 +207,13 @@ def send_message(page, message, settings):
 
     # 抖音私信输入框：contenteditable=true，placeholder=发送消息
     input_selectors = [
-        '[contenteditable="true"][data-placeholder*="发送"]',
         '[contenteditable="true"][data-placeholder*="发"]',
-        '[contenteditable="true"]',
-        'div.public-DraftEditor-content',
     ]
 
     input_box = None
     for sel in input_selectors:
         try:
-            loc = page.locator(sel).first
+            loc = page.locator(sel)
             if loc.is_visible(timeout=3000):
                 input_box = loc
                 break
@@ -271,6 +224,8 @@ def send_message(page, message, settings):
         logger.error("无法找到消息输入框")
         take_screenshot(page, "input_not_found")
         return False
+
+    existing_messages = page.get_by_text(message, exact=True).count()
 
     # 真人模拟：先停顿，模拟看消息
     human_pause(settings)
@@ -297,19 +252,20 @@ def send_message(page, message, settings):
     # 发送前停顿
     human_pause(settings)
 
-    # 发送：按Enter（抖音私信默认Enter发送）
-    sent = False
-    try:
-        page.keyboard.press("Enter")
-        sent = True
-        logger.info("通过Enter键发送消息")
-    except Exception as e:
-        logger.error(f"Enter发送失败: {e}")
+    if (input_box.text_content() or "").strip() != message:
+        logger.error("输入框内容与待发送消息不一致")
+        return False
 
-    if sent:
-        time.sleep(random.uniform(2, 4))
-        logger.info("消息发送成功")
-    return sent
+    # 发送：按Enter（抖音私信默认Enter发送）
+    page.keyboard.press("Enter")
+    try:
+        page.wait_for_function("(editor) => !editor.textContent.trim()", arg=input_box.element_handle(), timeout=5000)
+        page.get_by_text(message, exact=True).nth(existing_messages).wait_for(state="visible", timeout=5000)
+    except PlaywrightTimeoutError:
+        logger.error("未在会话中确认新消息，避免重复发送，本次不重试")
+        return False
+    logger.info("已在会话中看到新消息")
+    return True
 
 
 def take_screenshot(page, friend_name):
@@ -331,6 +287,16 @@ def run():
 
     settings = load_settings()
     friends = load_friends()
+    recipient = os.getenv("DOUYIN_RECIPIENT_INDEX")
+    check_only = recipient == "0"
+    if recipient is not None and not check_only:
+        if not recipient.isascii() or not recipient.isdecimal() or not 1 <= int(recipient) <= len(friends):
+            logger.error("好友序号超出启用好友列表")
+            return False
+        friends = [friends[int(recipient) - 1]]
+    if not check_only and not friends:
+        logger.error("没有启用的好友")
+        return False
     logger.info(f"加载配置完成，共 {len(friends)} 个启用的好友")
 
     # 阴间随机延时：在发送窗口内随机等待一段时间再开始
@@ -349,14 +315,14 @@ def run():
             return hm >= win_start or hm <= win_end
 
     now = datetime.now()
-    if not in_send_window(now, sched["send_window_start"], sched["send_window_end"]):
+    if not check_only and not in_send_window(now, sched["send_window_start"], sched["send_window_end"]):
         logger.info(f"当前时间 {now.strftime('%H:%M')} 不在发送窗口 {sched['send_window_start']}-{sched['send_window_end']} 内，跳过本次")
         return False
 
     # 距窗口开始不超过40分钟才发送（避免窗口内多次触发重复发送）
     ws = datetime.strptime(sched["send_window_start"], "%H:%M")
     mins_from_start = (now.hour * 60 + now.minute) - (ws.hour * 60 + ws.minute)
-    if mins_from_start > 40:
+    if not check_only and mins_from_start > 40:
         logger.info(f"当前时间距窗口开始已超过40分钟（{mins_from_start}分钟），可能是重复触发，跳过本次")
         return False
     logger.info(f"距窗口开始 {mins_from_start} 分钟，开始发送")
@@ -430,6 +396,7 @@ def run():
                 return False
 
             # 检查页面是否有登录按钮（且没有聊天列表）
+            has_chat_list = False
             try:
                 has_chat_list = page.locator('[class*="conversation"], [class*="chat-list"], [data-e2e*="conversation"]').count() > 0
                 has_login_btn = page.locator('button:has-text("登录"), a:has-text("登录")').count() > 0
@@ -439,6 +406,12 @@ def run():
                     return False
             except Exception as e:
                 logger.warning(f"登录状态检查异常: {e}")
+
+            if check_only:
+                if not has_chat_list:
+                    logger.error("未检测到私信列表，无法确认登录")
+                    return False
+                return True
 
             logger.info("抖音私信页面加载成功")
 
@@ -481,7 +454,7 @@ def run():
 
                 try:
                     # 搜索并打开聊天
-                    if not search_and_open_chat(page, friend_name, settings):
+                    if not search_and_open_chat(page, friend_name):
                         logger.error(f"跳过 {friend_name}: 无法打开聊天")
                         fail_count += 1
                         continue
@@ -518,15 +491,15 @@ def run():
             logger.info("\n" + "=" * 50)
             logger.info(f"任务完成！成功: {success_count}, 失败: {fail_count}")
             logger.info("=" * 50)
+            return fail_count == 0
 
         except Exception as e:
             logger.error(f"主流程出错: {e}", exc_info=True)
             take_screenshot(page, "fatal_error")
+            return False
         finally:
             browser.close()
             logger.info("浏览器已关闭")
-
-    return True
 
 if __name__ == "__main__":
     success = run()
