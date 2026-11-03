@@ -14,6 +14,7 @@ import random
 import logging
 import requests
 from datetime import datetime
+from enum import IntEnum
 from pathlib import Path
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
@@ -280,6 +281,24 @@ def take_screenshot(page, friend_name):
         logger.warning(f"截图失败: {e}")
 
 # ==================== 主流程 ====================
+class RunStatus(IntEnum):
+    OK = 0
+    OUTSIDE_WINDOW = 2
+    INVALID_RECIPIENT = 3
+    LOGIN_REQUIRED = 4
+    CHAT_UNAVAILABLE = 5
+    SEND_FAILED = 6
+
+
+def in_send_window(now, schedule):
+    current = now.strftime("%H:%M")
+    start = schedule["send_window_start"]
+    end = schedule["send_window_end"]
+    if start <= end:
+        return start <= current <= end
+    return current >= start or current <= end
+
+
 def run():
     logger.info("=" * 50)
     logger.info("抖音自动续火花任务开始")
@@ -288,44 +307,23 @@ def run():
     settings = load_settings()
     friends = load_friends()
     recipient = os.getenv("DOUYIN_RECIPIENT_INDEX")
-    check_only = recipient == "0"
-    if recipient is not None and not check_only:
+    scheduled = os.getenv("GITHUB_EVENT_NAME") == "schedule"
+    check_only = recipient == "0" and not scheduled
+    if recipient is not None and not check_only and not scheduled:
         if not recipient.isascii() or not recipient.isdecimal() or not 1 <= int(recipient) <= len(friends):
             logger.error("好友序号超出启用好友列表")
-            return False
+            return RunStatus.INVALID_RECIPIENT
         friends = [friends[int(recipient) - 1]]
     if not check_only and not friends:
         logger.error("没有启用的好友")
-        return False
+        return RunStatus.INVALID_RECIPIENT
     logger.info(f"加载配置完成，共 {len(friends)} 个启用的好友")
 
-    # 阴间随机延时：在发送窗口内随机等待一段时间再开始
     sched = settings["schedule"]
     now = datetime.now()
-    logger.info(f"当前时间: {now.strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info(f"发送窗口: {sched['send_window_start']} - {sched['send_window_end']}")
-
-    # 发送窗口判断：只有当前时间在窗口内且距窗口开始不超过40分钟才发送
-    # 这样配合多个触发点，即使某次触发延迟也能补救，且避免窗口内重复发送
-    def in_send_window(t, win_start, win_end):
-        hm = t.strftime("%H:%M")
-        if win_start <= win_end:
-            return win_start <= hm <= win_end
-        else:  # 跨天窗口，如 23:00 - 02:00
-            return hm >= win_start or hm <= win_end
-
-    now = datetime.now()
-    if not check_only and not in_send_window(now, sched["send_window_start"], sched["send_window_end"]):
-        logger.info(f"当前时间 {now.strftime('%H:%M')} 不在发送窗口 {sched['send_window_start']}-{sched['send_window_end']} 内，跳过本次")
-        return False
-
-    # 距窗口开始不超过40分钟才发送（避免窗口内多次触发重复发送）
-    ws = datetime.strptime(sched["send_window_start"], "%H:%M")
-    mins_from_start = (now.hour * 60 + now.minute) - (ws.hour * 60 + ws.minute)
-    if not check_only and mins_from_start > 40:
-        logger.info(f"当前时间距窗口开始已超过40分钟（{mins_from_start}分钟），可能是重复触发，跳过本次")
-        return False
-    logger.info(f"距窗口开始 {mins_from_start} 分钟，开始发送")
+    if not check_only and not in_send_window(now, sched):
+        logger.info("当前时间不在发送窗口，跳过发送")
+        return RunStatus.OUTSIDE_WINDOW
 
     with sync_playwright() as p:
         browser, context, page = init_browser(p, settings)
@@ -345,10 +343,10 @@ def run():
                     if attempt == 2:
                         logger.error("抖音页面打开失败")
                         take_screenshot(page, "page_open_fail")
-                        return False
+                        return RunStatus.CHAT_UNAVAILABLE
                     time.sleep(5)
             if not page_loaded:
-                return False
+                return RunStatus.CHAT_UNAVAILABLE
             
             # 等待页面加载完成
             logger.info("等待页面加载...")
@@ -393,7 +391,7 @@ def run():
             if "login" in current_url or "passport" in current_url:
                 logger.error("跳转到登录页，Cookie已失效，请重新获取Cookie")
                 take_screenshot(page, "login_required")
-                return False
+                return RunStatus.LOGIN_REQUIRED
 
             # 检查页面是否有登录按钮（且没有聊天列表）
             has_chat_list = False
@@ -403,15 +401,15 @@ def run():
                 if has_login_btn and not has_chat_list:
                     logger.error("页面显示登录按钮且无聊天列表，Cookie可能已失效")
                     take_screenshot(page, "login_required")
-                    return False
+                    return RunStatus.LOGIN_REQUIRED
             except Exception as e:
                 logger.warning(f"登录状态检查异常: {e}")
 
             if check_only:
                 if not has_chat_list:
                     logger.error("未检测到私信列表，无法确认登录")
-                    return False
-                return True
+                    return RunStatus.CHAT_UNAVAILABLE
+                return RunStatus.OK
 
             logger.info("抖音私信页面加载成功")
 
@@ -491,16 +489,15 @@ def run():
             logger.info("\n" + "=" * 50)
             logger.info(f"任务完成！成功: {success_count}, 失败: {fail_count}")
             logger.info("=" * 50)
-            return fail_count == 0
+            return RunStatus.SEND_FAILED if fail_count else RunStatus.OK
 
         except Exception as e:
             logger.error(f"主流程出错: {e}", exc_info=True)
             take_screenshot(page, "fatal_error")
-            return False
+            return RunStatus.CHAT_UNAVAILABLE
         finally:
             browser.close()
             logger.info("浏览器已关闭")
 
 if __name__ == "__main__":
-    success = run()
-    sys.exit(0 if success else 1)
+    sys.exit(run())
