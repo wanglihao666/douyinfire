@@ -1,6 +1,8 @@
 name: 抖音自动续火花
 
 on:
+  schedule:
+    - cron: '5 23 * * *' # 香港及北京时间 07:05
   workflow_dispatch:
     inputs:
       recipient_index:
@@ -17,6 +19,7 @@ concurrency:
 
 jobs:
   send-messages:
+    if: github.event_name == 'workflow_dispatch' || (vars.DOUYIN_SCHEDULE_ENABLED == 'true' && github.run_attempt == 1)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -56,14 +59,25 @@ jobs:
           Path("cookies.json").write_text(json.dumps(cookies), encoding="utf-8")
           PY
 
-      - name: 检查登录或试发一条私信
+      - name: 检查登录或发送私信
         run: |
-          if python main.py > /dev/null 2>&1; then
-            echo "抖音任务通过。"
-          else
-            echo "::error::抖音任务失败。请检查登录状态、收件人序号、发送窗口和抖音页面。"
-            exit 1
-          fi
+          status=0
+          python main.py > /dev/null 2>&1 || status=$?
+          case "$status" in
+            0) echo "抖音任务通过。" ;;
+            2)
+              if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+                echo "::notice::定时任务在发送窗口外启动，已跳过。"
+              else
+                echo "::error::请在香港时间 07:00–09:00 内试发；登录检查可随时运行。"
+                exit 1
+              fi ;;
+            3) echo "::error::请检查启用好友列表及输入序号。"; exit 1 ;;
+            4) echo "::error::抖音要求重新登录，请更新 DOUYIN_COOKIES。"; exit 1 ;;
+            5) echo "::error::无法打开抖音私信页面或确认私信列表。"; exit 1 ;;
+            6) echo "::error::部分消息未确认发送，请先检查抖音会话，避免重复发送。"; exit 1 ;;
+            *) echo "::error::抖音脚本异常退出，请检查浏览器和配置。"; exit 1 ;;
+          esac
 
       - name: 清理 Cookie
         if: always()
