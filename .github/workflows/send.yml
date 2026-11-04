@@ -73,6 +73,10 @@ jobs:
             4) echo "::error::抖音要求重新登录，请更新 DOUYIN_COOKIES。"; exit 1 ;;
             5) echo "::error::无法打开抖音私信页面或确认私信列表。"; exit 1 ;;
             6) echo "::error::部分消息未确认发送，请先检查抖音会话，避免重复发送。"; exit 1 ;;
+            7) echo "::error::抖音服务器拒绝访问私信页或返回 HTTP 错误。"; exit 1 ;;
+            8) echo "::error::抖音要求安全验证，请在抖音客户端或网页手动处理。"; exit 1 ;;
+            9) echo "::error::GitHub 运行环境无法连接抖音私信页。"; exit 1 ;;
+            10) echo "::error::抖音将请求重定向到其他页面，未进入私信页。"; exit 1 ;;
             *) echo "::error::抖音脚本异常退出，请检查浏览器和配置。"; exit 1 ;;
           esac
 
