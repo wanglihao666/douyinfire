@@ -9,6 +9,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import random
@@ -18,7 +19,8 @@ from datetime import datetime
 from enum import IntEnum
 from zoneinfo import ZoneInfo
 from pathlib import Path
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from urllib.parse import urlsplit
+from playwright.sync_api import Error as PlaywrightError, sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 # ==================== 路径配置 ====================
 BASE_DIR = Path(__file__).parent.resolve()
@@ -26,7 +28,8 @@ CONFIG_DIR = BASE_DIR / "config"
 LOG_DIR = BASE_DIR / "logs"
 SCREENSHOT_DIR = BASE_DIR / "screenshots"
 COOKIE_FILE = BASE_DIR / "cookies.json"
-CHAT_LIST_SELECTOR = '[class*="conversation"]:visible, [class*="chat-list"]:visible, [data-e2e*="conversation"]:visible'
+CHAT_LIST_SELECTOR = '[class*="conversationConversationListwrapper"]:visible, [class*="conversationConversationItemwrapper"]:visible, [class*="chat-list"]:visible, [data-e2e*="conversation"]:visible'
+CHAT_URL = "https://www.douyin.com/chat"
 
 for d in [LOG_DIR, SCREENSHOT_DIR]:
     d.mkdir(exist_ok=True)
@@ -290,6 +293,10 @@ class RunStatus(IntEnum):
     LOGIN_REQUIRED = 4
     CHAT_UNAVAILABLE = 5
     SEND_FAILED = 6
+    HTTP_REJECTED = 7
+    VERIFICATION_REQUIRED = 8
+    NAVIGATION_FAILED = 9
+    UNEXPECTED_PAGE = 10
 
 
 def in_send_window(now, schedule):
@@ -299,6 +306,43 @@ def in_send_window(now, schedule):
     if start <= end:
         return start <= current <= end
     return current >= start or current <= end
+
+
+def open_chat_page(page, timeout):
+    response = None
+    for attempt in range(3):
+        try:
+            response = page.goto(CHAT_URL, wait_until="domcontentloaded", timeout=60000)
+            break
+        except PlaywrightError:
+            if attempt == 2:
+                return RunStatus.NAVIGATION_FAILED
+            time.sleep(5)
+
+    if response and response.status >= 400:
+        logger.warning("抖音私信页返回 HTTP %s", response.status)
+        if response.status == 401:
+            return RunStatus.LOGIN_REQUIRED
+        return RunStatus.HTTP_REJECTED
+
+    try:
+        page.locator(CHAT_LIST_SELECTOR).first.wait_for(state="visible", timeout=timeout)
+        return RunStatus.OK
+    except PlaywrightTimeoutError:
+        location = urlsplit(page.url)
+        challenge = page.get_by_text(
+            re.compile(r"请完成(?:安全)?验证|拖动滑块|请进行安全验证|访问过于频繁")
+        ).first
+        if "captcha" in location.path.lower() or challenge.is_visible():
+            return RunStatus.VERIFICATION_REQUIRED
+        login = page.get_by_text(
+            re.compile(r"登录后.*(?:私信|聊天)|扫码登录|手机号登录|验证码登录|密码登录")
+        ).first
+        if "login" in location.path or "passport" in location.netloc or login.is_visible():
+            return RunStatus.LOGIN_REQUIRED
+        if location.hostname != "www.douyin.com" or location.path.rstrip("/") != "/chat":
+            return RunStatus.UNEXPECTED_PAGE
+        return RunStatus.CHAT_UNAVAILABLE
 
 
 def run(recipient):
@@ -338,37 +382,9 @@ def run(recipient):
             return RunStatus.LOGIN_REQUIRED
 
         try:
-            # 打开抖音私信页（带重试，避免网络波动）
-            logger.info("正在打开抖音私信页面...")
-            page.set_default_timeout(60000)
-            page_loaded = False
-            for attempt in range(3):
-                try:
-                    page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded", timeout=60000)
-                    page_loaded = True
-                    break
-                except Exception as e:
-                    logger.warning(f"打开抖音第{attempt+1}次失败: {str(e)[:60]}")
-                    if attempt == 2:
-                        logger.error("抖音页面打开失败")
-                        take_screenshot(page, "page_open_fail")
-                        return RunStatus.CHAT_UNAVAILABLE
-                    time.sleep(5)
-            if not page_loaded:
-                return RunStatus.CHAT_UNAVAILABLE
-            
-            chat_list = page.locator(CHAT_LIST_SELECTOR).first
-            try:
-                chat_list.wait_for(state="visible", timeout=settings["browser"]["timeout_ms"])
-            except PlaywrightTimeoutError:
-                login_prompt = page.get_by_role("button", name="登录", exact=True).or_(
-                    page.get_by_role("link", name="登录", exact=True)
-                ).first
-                if "login" in page.url or "passport" in page.url or login_prompt.is_visible():
-                    logger.error("抖音要求登录，请更新 Cookie")
-                    return RunStatus.LOGIN_REQUIRED
-                logger.error("未找到可见的私信列表")
-                return RunStatus.CHAT_UNAVAILABLE
+            status = open_chat_page(page, settings["browser"]["timeout_ms"])
+            if status != RunStatus.OK:
+                return status
 
             if check_only:
                 logger.info("登录检查通过，已打开私信列表")
