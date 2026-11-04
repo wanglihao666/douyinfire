@@ -186,9 +186,9 @@ def search_and_open_chat(page, friend_name):
     """打开唯一匹配好友名称的会话"""
     logger.info(f"正在打开与 {friend_name} 的聊天窗口")
 
-    conversations = page.locator('[class*="conversation"], [class*="Conversation"]').filter(
-        has=page.get_by_text(friend_name, exact=True)
-    )
+    rows = page.locator('[class*="conversation"]:visible, [class*="Conversation"]:visible')
+    name = page.get_by_text(friend_name, exact=True)
+    conversations = rows.and_(name).or_(rows.filter(has=name))
     try:
         conversations.click(timeout=8000)
         page.locator('[contenteditable="true"][data-placeholder*="发"]').wait_for(
