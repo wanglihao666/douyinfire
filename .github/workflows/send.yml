@@ -1,6 +1,8 @@
 name: 抖音自动续火花
 
 on:
+  schedule:
+    - cron: '5 23 * * *' # 香港及北京时间每天 07:05
   workflow_dispatch:
     inputs:
       recipient_index:
@@ -18,7 +20,7 @@ concurrency:
 jobs:
   send-messages:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       TZ: Asia/Shanghai
       DOUYIN_RECIPIENT_INDEX: ${{ inputs.recipient_index }}
@@ -38,9 +40,9 @@ jobs:
           playwright install --with-deps chromium
 
       - name: 防止重跑时重复发送
-        if: github.run_attempt > 1 && inputs.recipient_index != 0
+        if: github.run_attempt > 1 && (github.event_name == 'schedule' || inputs.recipient_index != 0)
         run: |
-          echo "::error::试发任务不可重跑。请先在抖音确认上一条是否送出。"
+          echo "::error::发送任务不可重跑。请先在抖音确认上一条是否送出。"
           exit 1
 
       - name: 验证并写入 Cookie
@@ -65,7 +67,11 @@ jobs:
       - name: 检查登录或发送私信
         run: |
           status=0
-          python main.py > /dev/null 2>&1 || status=$?
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+            python main.py --all-enabled > /dev/null 2>&1 || status=$?
+          else
+            python main.py > /dev/null 2>&1 || status=$?
+          fi
           case "$status" in
             0) echo "抖音任务通过。" ;;
             2) echo "::error::请在配置的发送窗口内试发；登录检查可随时运行。"; exit 1 ;;
