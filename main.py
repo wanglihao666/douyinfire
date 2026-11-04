@@ -30,6 +30,8 @@ SCREENSHOT_DIR = BASE_DIR / "screenshots"
 COOKIE_FILE = BASE_DIR / "cookies.json"
 CHAT_LIST_SELECTOR = '[class*="conversationConversationListwrapper"]:visible, [class*="conversationConversationItemwrapper"]:visible, [class*="chat-list"]:visible, [data-e2e*="conversation"]:visible'
 CHAT_URL = "https://www.douyin.com/chat"
+EDITOR_SELECTOR = '[contenteditable="true"][class*="editor-kit"], [contenteditable="true"][data-placeholder*="发"]'
+MESSAGE_TEXT_SELECTOR = '[class*="TextMessageTextpureText"]'
 
 for d in [LOG_DIR, SCREENSHOT_DIR]:
     d.mkdir(exist_ok=True)
@@ -189,12 +191,14 @@ def search_and_open_chat(page, friend_name):
     """打开唯一匹配好友名称的会话"""
     logger.info(f"正在打开与 {friend_name} 的聊天窗口")
 
-    rows = page.locator('[class*="conversation"]:visible, [class*="Conversation"]:visible')
-    name = page.get_by_text(friend_name, exact=True)
-    conversations = rows.and_(name).or_(rows.filter(has=name))
+    rows = page.locator('[class*="conversationConversationItemwrapper"]:visible')
+    name = page.locator('[class*="conversationConversationItemtitle"]').and_(
+        page.get_by_text(friend_name, exact=True)
+    )
+    conversations = rows.filter(has=name)
     try:
         conversations.click(timeout=8000)
-        page.locator('[contenteditable="true"][data-placeholder*="发"]').wait_for(
+        page.locator(EDITOR_SELECTOR).wait_for(
             state="visible", timeout=8000
         )
     except Exception:
@@ -209,7 +213,7 @@ def send_message(page, message, settings):
 
     # 抖音私信输入框：contenteditable=true，placeholder=发送消息
     input_selectors = [
-        '[contenteditable="true"][data-placeholder*="发"]',
+        EDITOR_SELECTOR,
     ]
 
     input_box = None
@@ -231,7 +235,8 @@ def send_message(page, message, settings):
         logger.error("会话输入框已有内容，保留原草稿并跳过")
         return False
 
-    existing_messages = page.get_by_text(message, exact=True).count()
+    matching_messages = page.locator(MESSAGE_TEXT_SELECTOR).and_(page.get_by_text(message, exact=True))
+    existing_messages = matching_messages.count()
 
     # 真人模拟：先停顿，模拟看消息
     human_pause(settings)
@@ -266,7 +271,7 @@ def send_message(page, message, settings):
     input_box.press("Enter")
     try:
         page.wait_for_function("(editor) => !editor.textContent.trim()", arg=input_box.element_handle(), timeout=5000)
-        page.get_by_text(message, exact=True).nth(existing_messages).wait_for(state="visible", timeout=5000)
+        matching_messages.nth(existing_messages).wait_for(state="visible", timeout=5000)
     except PlaywrightTimeoutError:
         logger.error("未在会话中确认新消息，避免重复发送，本次不重试")
         return False
@@ -345,15 +350,18 @@ def open_chat_page(page, timeout):
         return RunStatus.CHAT_UNAVAILABLE
 
 
-def run(recipient):
+def run(recipient, *, all_enabled=False):
     logger.info("=" * 50)
     logger.info("抖音自动续火花任务开始")
     logger.info("=" * 50)
 
     settings = load_settings()
     friends = load_friends()
-    check_only = recipient == 0
-    if not check_only:
+    check_only = recipient == 0 and not all_enabled
+    if all_enabled and not friends:
+        logger.error("没有已启用的好友")
+        return RunStatus.INVALID_RECIPIENT
+    if not check_only and not all_enabled:
         if not 1 <= recipient <= len(friends):
             logger.error("好友序号超出启用好友列表")
             return RunStatus.INVALID_RECIPIENT
@@ -480,8 +488,11 @@ def run(recipient):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="检查抖音私信登录，或在发送窗口内给一位好友试发")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--recipient-index", type=int, default=os.getenv("DOUYIN_RECIPIENT_INDEX") or "0",
         help="0 只检查登录（默认），正整数对应启用好友的配置顺序",
     )
-    sys.exit(run(parser.parse_args().recipient_index))
+    mode.add_argument("--all-enabled", action="store_true", help="在发送窗口内处理所有已启用好友")
+    args = parser.parse_args()
+    sys.exit(run(args.recipient_index, all_enabled=args.all_enabled))
