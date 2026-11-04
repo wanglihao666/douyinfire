@@ -1,6 +1,8 @@
 name: 抖音自动续火花
 
 on:
+  schedule:
+    - cron: '5 23 * * *' # 香港及北京时间每天 07:05
   workflow_dispatch:
     inputs:
       recipient_index:
@@ -18,7 +20,7 @@ concurrency:
 jobs:
   send-messages:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       TZ: Asia/Shanghai
       DOUYIN_RECIPIENT_INDEX: ${{ inputs.recipient_index }}
@@ -38,9 +40,9 @@ jobs:
           playwright install --with-deps chromium
 
       - name: 防止重跑时重复发送
-        if: github.run_attempt > 1 && inputs.recipient_index != 0
+        if: github.run_attempt > 1 && (github.event_name == 'schedule' || inputs.recipient_index != 0)
         run: |
-          echo "::error::试发任务不可重跑。请先在抖音确认上一条是否送出。"
+          echo "::error::发送任务不可重跑。请先在抖音确认上一条是否送出。"
           exit 1
 
       - name: 验证并写入 Cookie
@@ -65,7 +67,11 @@ jobs:
       - name: 检查登录或发送私信
         run: |
           status=0
-          python main.py > /dev/null 2>&1 || status=$?
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+            python main.py --all-enabled > /dev/null 2>&1 || status=$?
+          else
+            python main.py > /dev/null 2>&1 || status=$?
+          fi
           case "$status" in
             0) echo "抖音任务通过。" ;;
             2) echo "::error::请在配置的发送窗口内试发；登录检查可随时运行。"; exit 1 ;;
@@ -73,6 +79,10 @@ jobs:
             4) echo "::error::抖音要求重新登录，请更新 DOUYIN_COOKIES。"; exit 1 ;;
             5) echo "::error::无法打开抖音私信页面或确认私信列表。"; exit 1 ;;
             6) echo "::error::部分消息未确认发送，请先检查抖音会话，避免重复发送。"; exit 1 ;;
+            7) echo "::error::抖音服务器拒绝访问私信页或返回 HTTP 错误。"; exit 1 ;;
+            8) echo "::error::抖音要求安全验证，请在抖音客户端或网页手动处理。"; exit 1 ;;
+            9) echo "::error::GitHub 运行环境无法连接抖音私信页。"; exit 1 ;;
+            10) echo "::error::抖音将请求重定向到其他页面，未进入私信页。"; exit 1 ;;
             *) echo "::error::抖音脚本异常退出，请检查浏览器和配置。"; exit 1 ;;
           esac
 

@@ -1,25 +1,14 @@
 {
   "message": {
-    "source": "hitokoto_api",
+    "source": "fixed",
     "hitokoto_api": "https://v1.hitokoto.cn/",
     "hitokoto_params": {
       "c": ["a", "b", "c", "d", "h", "i", "k"],
       "encode": "json"
     },
-    "fallback_messages": [
-      "月色与雪色之间，你是第三种绝色。",
-      "凌晨四点钟，看到海棠花未眠。",
-      "人生如逆旅，我亦是行人。",
-      "万物皆有裂痕，那是光照进来的地方。",
-      "夜是那种藏起所有情绪，又在凌晨三点全部放出来的东西。",
-      "我们都是阴沟里的虫子，但总还是得有人仰望星空。",
-      "此心安处是吾乡。",
-      "凡是过往，皆为序章。",
-      "未经审视的人生不值得过。",
-      "世界上只有一种英雄主义，就是看清生活的真相之后依然热爱生活。"
-    ],
+    "fallback_messages": ["hi"],
     "max_length": 50,
-    "add_emoji": true,
+    "add_emoji": false,
     "emoji_pool": ["🌙", "✨", "🔥", "💫", "🌌", "☕", "📖", "🎵", "🌊", "🍃"]
   },
   "schedule": {

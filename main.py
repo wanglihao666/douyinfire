@@ -9,6 +9,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import random
@@ -18,7 +19,8 @@ from datetime import datetime
 from enum import IntEnum
 from zoneinfo import ZoneInfo
 from pathlib import Path
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from urllib.parse import urlsplit
+from playwright.sync_api import Error as PlaywrightError, sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 # ==================== 路径配置 ====================
 BASE_DIR = Path(__file__).parent.resolve()
@@ -26,7 +28,10 @@ CONFIG_DIR = BASE_DIR / "config"
 LOG_DIR = BASE_DIR / "logs"
 SCREENSHOT_DIR = BASE_DIR / "screenshots"
 COOKIE_FILE = BASE_DIR / "cookies.json"
-CHAT_LIST_SELECTOR = '[class*="conversation"]:visible, [class*="chat-list"]:visible, [data-e2e*="conversation"]:visible'
+CHAT_LIST_SELECTOR = '[class*="conversationConversationListwrapper"]:visible, [class*="conversationConversationItemwrapper"]:visible, [class*="chat-list"]:visible, [data-e2e*="conversation"]:visible'
+CHAT_URL = "https://www.douyin.com/chat"
+EDITOR_SELECTOR = '[contenteditable="true"][class*="editor-kit"], [contenteditable="true"][data-placeholder*="发"]'
+MESSAGE_TEXT_SELECTOR = '[class*="TextMessageTextpureText"]'
 
 for d in [LOG_DIR, SCREENSHOT_DIR]:
     d.mkdir(exist_ok=True)
@@ -182,19 +187,57 @@ def init_browser(playwright, settings, cookies):
     page.set_default_timeout(br_cfg["timeout_ms"])
     return browser, context, page
 
+def find_conversation(page, friend_name):
+    rows = page.locator('[class*="conversationConversationItemwrapper"]:visible')
+    name = page.locator('[class*="conversationConversationItemtitle"]').and_(
+        page.get_by_text(friend_name, exact=True)
+    )
+    matches = rows.filter(has=name)
+    count = matches.count()
+    if count:
+        return matches if count == 1 else None
+    if not rows.count():
+        return None
+
+    # 私信列表会按滚动位置加载会话，逐屏查找，保持昵称精确匹配。
+    pane = rows.first.evaluate_handle("""row => {
+        for (let parent = row.parentElement; parent; parent = parent.parentElement) {
+            if (parent.scrollHeight > parent.clientHeight
+                && /auto|scroll/.test(getComputedStyle(parent).overflowY)) return parent;
+        }
+        return null;
+    }""")
+    try:
+        if pane.as_element() is None:
+            return None
+        pane.evaluate("el => { el.scrollTop = 0; }")
+        for _ in range(80):
+            page.wait_for_timeout(200)
+            count = matches.count()
+            if count:
+                return matches if count == 1 else None
+            moved = pane.evaluate("""el => {
+                const before = el.scrollTop;
+                el.scrollTop += Math.max(1, Math.floor(el.clientHeight * 0.75));
+                return el.scrollTop !== before;
+            }""")
+            if not moved:
+                break
+        return None
+    finally:
+        pane.dispose()
+
+
 def search_and_open_chat(page, friend_name):
     """打开唯一匹配好友名称的会话"""
     logger.info(f"正在打开与 {friend_name} 的聊天窗口")
-
-    rows = page.locator('[class*="conversation"]:visible, [class*="Conversation"]:visible')
-    name = page.get_by_text(friend_name, exact=True)
-    conversations = rows.and_(name).or_(rows.filter(has=name))
     try:
-        conversations.click(timeout=8000)
-        page.locator('[contenteditable="true"][data-placeholder*="发"]').wait_for(
-            state="visible", timeout=8000
-        )
-    except Exception:
+        conversation = find_conversation(page, friend_name)
+        if conversation is None:
+            return False
+        conversation.click(timeout=8000)
+        page.locator(EDITOR_SELECTOR).wait_for(state="visible", timeout=8000)
+    except PlaywrightError:
         logger.error("无法唯一定位好友会话或消息输入框，跳过发送")
         return False
     return True
@@ -206,7 +249,7 @@ def send_message(page, message, settings):
 
     # 抖音私信输入框：contenteditable=true，placeholder=发送消息
     input_selectors = [
-        '[contenteditable="true"][data-placeholder*="发"]',
+        EDITOR_SELECTOR,
     ]
 
     input_box = None
@@ -228,7 +271,8 @@ def send_message(page, message, settings):
         logger.error("会话输入框已有内容，保留原草稿并跳过")
         return False
 
-    existing_messages = page.get_by_text(message, exact=True).count()
+    matching_messages = page.locator(MESSAGE_TEXT_SELECTOR).and_(page.get_by_text(message, exact=True))
+    existing_messages = matching_messages.count()
 
     # 真人模拟：先停顿，模拟看消息
     human_pause(settings)
@@ -263,7 +307,7 @@ def send_message(page, message, settings):
     input_box.press("Enter")
     try:
         page.wait_for_function("(editor) => !editor.textContent.trim()", arg=input_box.element_handle(), timeout=5000)
-        page.get_by_text(message, exact=True).nth(existing_messages).wait_for(state="visible", timeout=5000)
+        matching_messages.nth(existing_messages).wait_for(state="visible", timeout=5000)
     except PlaywrightTimeoutError:
         logger.error("未在会话中确认新消息，避免重复发送，本次不重试")
         return False
@@ -290,6 +334,10 @@ class RunStatus(IntEnum):
     LOGIN_REQUIRED = 4
     CHAT_UNAVAILABLE = 5
     SEND_FAILED = 6
+    HTTP_REJECTED = 7
+    VERIFICATION_REQUIRED = 8
+    NAVIGATION_FAILED = 9
+    UNEXPECTED_PAGE = 10
 
 
 def in_send_window(now, schedule):
@@ -301,15 +349,55 @@ def in_send_window(now, schedule):
     return current >= start or current <= end
 
 
-def run(recipient):
+def open_chat_page(page, timeout):
+    response = None
+    for attempt in range(3):
+        try:
+            response = page.goto(CHAT_URL, wait_until="domcontentloaded", timeout=60000)
+            break
+        except PlaywrightError:
+            if attempt == 2:
+                return RunStatus.NAVIGATION_FAILED
+            time.sleep(5)
+
+    if response and response.status >= 400:
+        logger.warning("抖音私信页返回 HTTP %s", response.status)
+        if response.status == 401:
+            return RunStatus.LOGIN_REQUIRED
+        return RunStatus.HTTP_REJECTED
+
+    try:
+        page.locator(CHAT_LIST_SELECTOR).first.wait_for(state="visible", timeout=timeout)
+        return RunStatus.OK
+    except PlaywrightTimeoutError:
+        location = urlsplit(page.url)
+        challenge = page.get_by_text(
+            re.compile(r"请完成(?:安全)?验证|拖动滑块|请进行安全验证|访问过于频繁")
+        ).first
+        if "captcha" in location.path.lower() or challenge.is_visible():
+            return RunStatus.VERIFICATION_REQUIRED
+        login = page.get_by_text(
+            re.compile(r"登录后.*(?:私信|聊天)|扫码登录|手机号登录|验证码登录|密码登录")
+        ).first
+        if "login" in location.path or "passport" in location.netloc or login.is_visible():
+            return RunStatus.LOGIN_REQUIRED
+        if location.hostname != "www.douyin.com" or location.path.rstrip("/") != "/chat":
+            return RunStatus.UNEXPECTED_PAGE
+        return RunStatus.CHAT_UNAVAILABLE
+
+
+def run(recipient, *, all_enabled=False):
     logger.info("=" * 50)
     logger.info("抖音自动续火花任务开始")
     logger.info("=" * 50)
 
     settings = load_settings()
     friends = load_friends()
-    check_only = recipient == 0
-    if not check_only:
+    check_only = recipient == 0 and not all_enabled
+    if all_enabled and not friends:
+        logger.error("没有已启用的好友")
+        return RunStatus.INVALID_RECIPIENT
+    if not check_only and not all_enabled:
         if not 1 <= recipient <= len(friends):
             logger.error("好友序号超出启用好友列表")
             return RunStatus.INVALID_RECIPIENT
@@ -338,37 +426,9 @@ def run(recipient):
             return RunStatus.LOGIN_REQUIRED
 
         try:
-            # 打开抖音私信页（带重试，避免网络波动）
-            logger.info("正在打开抖音私信页面...")
-            page.set_default_timeout(60000)
-            page_loaded = False
-            for attempt in range(3):
-                try:
-                    page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded", timeout=60000)
-                    page_loaded = True
-                    break
-                except Exception as e:
-                    logger.warning(f"打开抖音第{attempt+1}次失败: {str(e)[:60]}")
-                    if attempt == 2:
-                        logger.error("抖音页面打开失败")
-                        take_screenshot(page, "page_open_fail")
-                        return RunStatus.CHAT_UNAVAILABLE
-                    time.sleep(5)
-            if not page_loaded:
-                return RunStatus.CHAT_UNAVAILABLE
-            
-            chat_list = page.locator(CHAT_LIST_SELECTOR).first
-            try:
-                chat_list.wait_for(state="visible", timeout=settings["browser"]["timeout_ms"])
-            except PlaywrightTimeoutError:
-                login_prompt = page.get_by_role("button", name="登录", exact=True).or_(
-                    page.get_by_role("link", name="登录", exact=True)
-                ).first
-                if "login" in page.url or "passport" in page.url or login_prompt.is_visible():
-                    logger.error("抖音要求登录，请更新 Cookie")
-                    return RunStatus.LOGIN_REQUIRED
-                logger.error("未找到可见的私信列表")
-                return RunStatus.CHAT_UNAVAILABLE
+            status = open_chat_page(page, settings["browser"]["timeout_ms"])
+            if status != RunStatus.OK:
+                return status
 
             if check_only:
                 logger.info("登录检查通过，已打开私信列表")
@@ -464,8 +524,11 @@ def run(recipient):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="检查抖音私信登录，或在发送窗口内给一位好友试发")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--recipient-index", type=int, default=os.getenv("DOUYIN_RECIPIENT_INDEX") or "0",
         help="0 只检查登录（默认），正整数对应启用好友的配置顺序",
     )
-    sys.exit(run(parser.parse_args().recipient_index))
+    mode.add_argument("--all-enabled", action="store_true", help="在发送窗口内处理所有已启用好友")
+    args = parser.parse_args()
+    sys.exit(run(args.recipient_index, all_enabled=args.all_enabled))
