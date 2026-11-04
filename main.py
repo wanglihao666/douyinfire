@@ -187,21 +187,57 @@ def init_browser(playwright, settings, cookies):
     page.set_default_timeout(br_cfg["timeout_ms"])
     return browser, context, page
 
-def search_and_open_chat(page, friend_name):
-    """打开唯一匹配好友名称的会话"""
-    logger.info(f"正在打开与 {friend_name} 的聊天窗口")
-
+def find_conversation(page, friend_name):
     rows = page.locator('[class*="conversationConversationItemwrapper"]:visible')
     name = page.locator('[class*="conversationConversationItemtitle"]').and_(
         page.get_by_text(friend_name, exact=True)
     )
-    conversations = rows.filter(has=name)
+    matches = rows.filter(has=name)
+    count = matches.count()
+    if count:
+        return matches if count == 1 else None
+    if not rows.count():
+        return None
+
+    # 私信列表会按滚动位置加载会话，逐屏查找，保持昵称精确匹配。
+    pane = rows.first.evaluate_handle("""row => {
+        for (let parent = row.parentElement; parent; parent = parent.parentElement) {
+            if (parent.scrollHeight > parent.clientHeight
+                && /auto|scroll/.test(getComputedStyle(parent).overflowY)) return parent;
+        }
+        return null;
+    }""")
     try:
-        conversations.click(timeout=8000)
-        page.locator(EDITOR_SELECTOR).wait_for(
-            state="visible", timeout=8000
-        )
-    except Exception:
+        if pane.as_element() is None:
+            return None
+        pane.evaluate("el => { el.scrollTop = 0; }")
+        for _ in range(80):
+            page.wait_for_timeout(200)
+            count = matches.count()
+            if count:
+                return matches if count == 1 else None
+            moved = pane.evaluate("""el => {
+                const before = el.scrollTop;
+                el.scrollTop += Math.max(1, Math.floor(el.clientHeight * 0.75));
+                return el.scrollTop !== before;
+            }""")
+            if not moved:
+                break
+        return None
+    finally:
+        pane.dispose()
+
+
+def search_and_open_chat(page, friend_name):
+    """打开唯一匹配好友名称的会话"""
+    logger.info(f"正在打开与 {friend_name} 的聊天窗口")
+    try:
+        conversation = find_conversation(page, friend_name)
+        if conversation is None:
+            return False
+        conversation.click(timeout=8000)
+        page.locator(EDITOR_SELECTOR).wait_for(state="visible", timeout=8000)
+    except PlaywrightError:
         logger.error("无法唯一定位好友会话或消息输入框，跳过发送")
         return False
     return True
