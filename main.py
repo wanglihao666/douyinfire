@@ -6,6 +6,7 @@
 支持 GitHub Action / 本地 / 云服务器 部署
 """
 
+import argparse
 import json
 import os
 import sys
@@ -15,6 +16,7 @@ import logging
 import requests
 from datetime import datetime
 from enum import IntEnum
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
@@ -24,6 +26,7 @@ CONFIG_DIR = BASE_DIR / "config"
 LOG_DIR = BASE_DIR / "logs"
 SCREENSHOT_DIR = BASE_DIR / "screenshots"
 COOKIE_FILE = BASE_DIR / "cookies.json"
+CHAT_LIST_SELECTOR = '[class*="conversation"]:visible, [class*="chat-list"]:visible, [data-e2e*="conversation"]:visible'
 
 for d in [LOG_DIR, SCREENSHOT_DIR]:
     d.mkdir(exist_ok=True)
@@ -117,7 +120,7 @@ def human_pause(settings, min_key="pre_send_pause_min_s", max_key="pre_send_paus
     time.sleep(delay)
 
 # ==================== 浏览器操作 ====================
-def init_browser(playwright, settings):
+def init_browser(playwright, settings, cookies):
     """启动浏览器并加载Cookie"""
     br_cfg = settings["browser"]
     browser = playwright.chromium.launch(
@@ -169,16 +172,11 @@ def init_browser(playwright, settings):
         );
     """)
 
-    # 加载Cookie
-    if COOKIE_FILE.exists():
-        try:
-            cookies = load_json(COOKIE_FILE)
-            context.add_cookies(cookies)
-            logger.info("Cookie加载成功")
-        except Exception as e:
-            logger.warning(f"Cookie加载失败: {e}")
-    else:
-        logger.warning("未找到cookies.json，请先运行 scripts/get_cookie.py 获取Cookie")
+    try:
+        context.add_cookies(cookies)
+    except Exception:
+        browser.close()
+        raise ValueError("Cookie 格式不符合 Playwright 要求") from None
 
     page = context.new_page()
     page.set_default_timeout(br_cfg["timeout_ms"])
@@ -188,9 +186,9 @@ def search_and_open_chat(page, friend_name):
     """打开唯一匹配好友名称的会话"""
     logger.info(f"正在打开与 {friend_name} 的聊天窗口")
 
-    conversations = page.locator('[class*="conversation"], [class*="Conversation"]').filter(
-        has=page.get_by_text(friend_name, exact=True)
-    )
+    rows = page.locator('[class*="conversation"]:visible, [class*="Conversation"]:visible')
+    name = page.get_by_text(friend_name, exact=True)
+    conversations = rows.and_(name).or_(rows.filter(has=name))
     try:
         conversations.click(timeout=8000)
         page.locator('[contenteditable="true"][data-placeholder*="发"]').wait_for(
@@ -226,6 +224,10 @@ def send_message(page, message, settings):
         take_screenshot(page, "input_not_found")
         return False
 
+    if (input_box.text_content() or "").strip():
+        logger.error("会话输入框已有内容，保留原草稿并跳过")
+        return False
+
     existing_messages = page.get_by_text(message, exact=True).count()
 
     # 真人模拟：先停顿，模拟看消息
@@ -258,7 +260,7 @@ def send_message(page, message, settings):
         return False
 
     # 发送：按Enter（抖音私信默认Enter发送）
-    page.keyboard.press("Enter")
+    input_box.press("Enter")
     try:
         page.wait_for_function("(editor) => !editor.textContent.trim()", arg=input_box.element_handle(), timeout=5000)
         page.get_by_text(message, exact=True).nth(existing_messages).wait_for(state="visible", timeout=5000)
@@ -299,34 +301,41 @@ def in_send_window(now, schedule):
     return current >= start or current <= end
 
 
-def run():
+def run(recipient):
     logger.info("=" * 50)
     logger.info("抖音自动续火花任务开始")
     logger.info("=" * 50)
 
     settings = load_settings()
     friends = load_friends()
-    recipient = os.getenv("DOUYIN_RECIPIENT_INDEX")
-    scheduled = os.getenv("GITHUB_EVENT_NAME") == "schedule"
-    check_only = recipient == "0" and not scheduled
-    if recipient is not None and not check_only and not scheduled:
-        if not recipient.isascii() or not recipient.isdecimal() or not 1 <= int(recipient) <= len(friends):
+    check_only = recipient == 0
+    if not check_only:
+        if not 1 <= recipient <= len(friends):
             logger.error("好友序号超出启用好友列表")
             return RunStatus.INVALID_RECIPIENT
-        friends = [friends[int(recipient) - 1]]
-    if not check_only and not friends:
-        logger.error("没有启用的好友")
-        return RunStatus.INVALID_RECIPIENT
+        friends = [friends[recipient - 1]]
     logger.info(f"加载配置完成，共 {len(friends)} 个启用的好友")
 
     sched = settings["schedule"]
-    now = datetime.now()
+    now = datetime.now(ZoneInfo(sched["timezone"]))
     if not check_only and not in_send_window(now, sched):
         logger.info("当前时间不在发送窗口，跳过发送")
         return RunStatus.OUTSIDE_WINDOW
 
+    try:
+        cookies = load_json(COOKIE_FILE)
+        if not isinstance(cookies, list) or not cookies or not all(isinstance(cookie, dict) for cookie in cookies):
+            raise ValueError
+    except (OSError, ValueError):
+        logger.error("缺少有效的 cookies.json，请先运行 scripts/get_cookie.py")
+        return RunStatus.LOGIN_REQUIRED
+
     with sync_playwright() as p:
-        browser, context, page = init_browser(p, settings)
+        try:
+            browser, _, page = init_browser(p, settings, cookies)
+        except ValueError:
+            logger.error("Cookie 格式无效，请重新导出")
+            return RunStatus.LOGIN_REQUIRED
 
         try:
             # 打开抖音私信页（带重试，避免网络波动）
@@ -348,67 +357,21 @@ def run():
             if not page_loaded:
                 return RunStatus.CHAT_UNAVAILABLE
             
-            # 等待页面加载完成
-            logger.info("等待页面加载...")
+            chat_list = page.locator(CHAT_LIST_SELECTOR).first
             try:
-                page.wait_for_load_state("networkidle", timeout=30000)
-            except Exception:
-                logger.warning("等待networkidle超时，继续执行")
-            
-            # 额外等待，确保React应用渲染完成
-            time.sleep(random.uniform(8, 12))
-            
-            # 尝试滚动页面触发懒加载
-            try:
-                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                time.sleep(1)
-                page.evaluate("window.scrollTo(0, 0)")
-                time.sleep(1)
-            except Exception:
-                pass
-            
-            # 等待搜索框出现（最多等待30秒）
-            logger.info("等待搜索框出现...")
-            search_found = False
-            for wait_sel in ['input[placeholder*="搜索"]', 'input[type="text"]', '[contenteditable="true"]', 'div[class*="search"]']:
-                try:
-                    page.wait_for_selector(wait_sel, timeout=10000, state="visible")
-                    logger.info(f"搜索框已出现: {wait_sel}")
-                    search_found = True
-                    break
-                except Exception:
-                    continue
-            
-            if not search_found:
-                logger.warning("未检测到搜索框，页面可能未完全渲染")
-            
-            # 截图记录初始页面状态
-            take_screenshot(page, "initial_page")
-
-            # 检查是否需要登录（更严格的检查：URL包含login或出现登录表单）
-            current_url = page.url
-            logger.info(f"当前URL: {current_url}")
-            if "login" in current_url or "passport" in current_url:
-                logger.error("跳转到登录页，Cookie已失效，请重新获取Cookie")
-                take_screenshot(page, "login_required")
-                return RunStatus.LOGIN_REQUIRED
-
-            # 检查页面是否有登录按钮（且没有聊天列表）
-            has_chat_list = False
-            try:
-                has_chat_list = page.locator('[class*="conversation"], [class*="chat-list"], [data-e2e*="conversation"]').count() > 0
-                has_login_btn = page.locator('button:has-text("登录"), a:has-text("登录")').count() > 0
-                if has_login_btn and not has_chat_list:
-                    logger.error("页面显示登录按钮且无聊天列表，Cookie可能已失效")
-                    take_screenshot(page, "login_required")
+                chat_list.wait_for(state="visible", timeout=settings["browser"]["timeout_ms"])
+            except PlaywrightTimeoutError:
+                login_prompt = page.get_by_role("button", name="登录", exact=True).or_(
+                    page.get_by_role("link", name="登录", exact=True)
+                ).first
+                if "login" in page.url or "passport" in page.url or login_prompt.is_visible():
+                    logger.error("抖音要求登录，请更新 Cookie")
                     return RunStatus.LOGIN_REQUIRED
-            except Exception as e:
-                logger.warning(f"登录状态检查异常: {e}")
+                logger.error("未找到可见的私信列表")
+                return RunStatus.CHAT_UNAVAILABLE
 
             if check_only:
-                if not has_chat_list:
-                    logger.error("未检测到私信列表，无法确认登录")
-                    return RunStatus.CHAT_UNAVAILABLE
+                logger.info("登录检查通过，已打开私信列表")
                 return RunStatus.OK
 
             logger.info("抖音私信页面加载成功")
@@ -500,4 +463,9 @@ def run():
             logger.info("浏览器已关闭")
 
 if __name__ == "__main__":
-    sys.exit(run())
+    parser = argparse.ArgumentParser(description="检查抖音私信登录，或在发送窗口内给一位好友试发")
+    parser.add_argument(
+        "--recipient-index", type=int, default=os.getenv("DOUYIN_RECIPIENT_INDEX") or "0",
+        help="0 只检查登录（默认），正整数对应启用好友的配置顺序",
+    )
+    sys.exit(run(parser.parse_args().recipient_index))
