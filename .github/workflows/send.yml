@@ -3,6 +3,7 @@ name: 抖音自动续火花
 on:
   schedule:
     - cron: '5 23 * * *' # 香港及北京时间每天 07:05
+    - cron: '35 4,10 * * *' # 当天 12:35、18:35 补跑，已有记录的好友自动跳过
   workflow_dispatch:
     inputs:
       recipient_index:
@@ -11,7 +12,7 @@ on:
         default: 0
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: douyin-fire
@@ -23,6 +24,7 @@ jobs:
     timeout-minutes: 60
     env:
       TZ: Asia/Shanghai
+      DOUYIN_STATE_TOKEN: ${{ github.token }}
       DOUYIN_RECIPIENT_INDEX: ${{ inputs.recipient_index }}
 
     steps:

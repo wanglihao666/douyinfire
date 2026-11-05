@@ -18,6 +18,7 @@ import requests
 from datetime import datetime
 from enum import IntEnum
 from zoneinfo import ZoneInfo
+from delivery_state import DeliveryState
 from pathlib import Path
 from urllib.parse import urlsplit
 from playwright.sync_api import Error as PlaywrightError, sync_playwright, TimeoutError as PlaywrightTimeoutError
@@ -243,7 +244,7 @@ def search_and_open_chat(page, friend_name):
     return True
 
 
-def send_message(page, message, settings):
+def send_message(page, message, settings, before_send=None):
     """在当前聊天窗口发送消息"""
     logger.info(f"准备发送消息: {message[:30]}...")
 
@@ -304,6 +305,9 @@ def send_message(page, message, settings):
         return False
 
     # 发送：按Enter（抖音私信默认Enter发送）
+    if before_send is not None and not before_send():
+        input_box.fill("")
+        return None
     input_box.press("Enter")
     try:
         page.wait_for_function("(editor) => !editor.textContent.trim()", arg=input_box.element_handle(), timeout=5000)
@@ -406,7 +410,8 @@ def run(recipient, *, all_enabled=False):
 
     sched = settings["schedule"]
     now = datetime.now(ZoneInfo(sched["timezone"]))
-    if not check_only and not in_send_window(now, sched):
+    allowed = now.strftime("%H:%M") >= sched["send_window_start"] if all_enabled else in_send_window(now, sched)
+    if not check_only and not allowed:
         logger.info("当前时间不在发送窗口，跳过发送")
         return RunStatus.OUTSIDE_WINDOW
 
@@ -417,6 +422,10 @@ def run(recipient, *, all_enabled=False):
     except (OSError, ValueError):
         logger.error("缺少有效的 cookies.json，请先运行 scripts/get_cookie.py")
         return RunStatus.LOGIN_REQUIRED
+
+    state = DeliveryState(now.date().isoformat())
+    if check_only and os.getenv("GITHUB_REPOSITORY"):
+        state.reserve("__storage_check__")
 
     with sync_playwright() as p:
         try:
@@ -474,6 +483,13 @@ def run(recipient, *, all_enabled=False):
                 logger.info(f"\n--- [{i+1}/{len(friends)}] 处理好友: {friend_name} ---")
 
                 try:
+                    if datetime.now(ZoneInfo(sched["timezone"])).date().isoformat() != state.day:
+                        logger.error("任务已跨日，结束本次发送")
+                        return RunStatus.SEND_FAILED
+                    if state.was_attempted(friend_name):
+                        logger.info("此好友今日已有发送记录，跳过")
+                        continue
+
                     # 搜索并打开聊天
                     if not search_and_open_chat(page, friend_name):
                         logger.error(f"跳过 {friend_name}: 无法打开聊天")
@@ -485,7 +501,13 @@ def run(recipient, *, all_enabled=False):
                     logger.info(f"消息内容: {message}")
 
                     # 发送
-                    if send_message(page, message, settings):
+                    result = send_message(
+                        page, message, settings,
+                        before_send=lambda: state.reserve(friend_name),
+                    )
+                    if result is None:
+                        continue
+                    if result:
                         success_count += 1
                         take_screenshot(page, friend_name)
                     else:
