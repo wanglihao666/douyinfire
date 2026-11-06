@@ -10,6 +10,10 @@ on:
         description: "0 仅检查登录；大于 0 时给启用好友列表中的对应序号发送一条私信"
         type: number
         default: 0
+      diagnose:
+        description: "仅检查首个会话的输入流程，发送前取消"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -70,9 +74,11 @@ jobs:
         run: |
           status=0
           if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
-            python main.py --all-enabled > /dev/null 2>&1 || status=$?
+            python main.py --all-enabled 2>/dev/null || status=$?
+          elif [[ "${{ inputs.diagnose }}" == "true" ]]; then
+            python main.py --diagnose 2>/dev/null || status=$?
           else
-            python main.py > /dev/null 2>&1 || status=$?
+            python main.py 2>/dev/null || status=$?
           fi
           case "$status" in
             0) echo "抖音任务通过。" ;;
