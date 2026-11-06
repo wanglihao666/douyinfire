@@ -10,6 +10,14 @@ on:
         description: "0 仅检查登录；大于 0 时给启用好友列表中的对应序号发送一条私信"
         type: number
         default: 0
+      send_all_enabled:
+        description: "补发今日尚无记录的启用好友，每人一条 hi"
+        type: boolean
+        default: false
+      diagnose:
+        description: "仅检查首个会话的输入流程，发送前取消"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -42,7 +50,7 @@ jobs:
           playwright install --with-deps chromium
 
       - name: 防止重跑时重复发送
-        if: github.run_attempt > 1 && (github.event_name == 'schedule' || inputs.recipient_index != 0)
+        if: github.run_attempt > 1 && (github.event_name == 'schedule' || inputs.send_all_enabled || inputs.recipient_index != 0)
         run: |
           echo "::error::发送任务不可重跑。请先在抖音确认上一条是否送出。"
           exit 1
@@ -69,10 +77,16 @@ jobs:
       - name: 检查登录或发送私信
         run: |
           status=0
-          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
-            python main.py --all-enabled > /dev/null 2>&1 || status=$?
+          if [[ "${{ inputs.diagnose }}" == "true" && "${{ inputs.send_all_enabled }}" == "true" ]]; then
+            echo "::error::输入诊断与实际补发不能同时选择。"
+            exit 1
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" || "${{ inputs.send_all_enabled }}" == "true" ]]; then
+            python main.py --all-enabled 2>/dev/null || status=$?
+          elif [[ "${{ inputs.diagnose }}" == "true" ]]; then
+            python main.py --diagnose 2>/dev/null || status=$?
           else
-            python main.py > /dev/null 2>&1 || status=$?
+            python main.py 2>/dev/null || status=$?
           fi
           case "$status" in
             0) echo "抖音任务通过。" ;;
