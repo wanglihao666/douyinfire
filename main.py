@@ -43,10 +43,20 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.FileHandler(LOG_DIR / f"run_{datetime.now().strftime('%Y%m%d')}.log", encoding="utf-8"),
-        logging.StreamHandler(sys.stdout)
+        logging.StreamHandler(sys.stderr)
     ]
 )
 logger = logging.getLogger(__name__)
+
+def diagnostic(stage, **counts):
+    """Emit only fixed stage codes and numeric counts into public Actions logs."""
+    print("DIAGNOSTIC " + json.dumps({"stage": stage, **counts}), flush=True)
+
+
+def editor_text(text):
+    # Slate uses zero-width spaces to represent an otherwise empty editor.
+    return (text or "").replace("\u200b", "").replace("\ufeff", "").strip()
+
 
 # ==================== 配置加载 ====================
 def load_json(path):
@@ -235,10 +245,14 @@ def search_and_open_chat(page, friend_name):
     try:
         conversation = find_conversation(page, friend_name)
         if conversation is None:
+            diagnostic("conversation_not_found_or_ambiguous")
             return False
+        stage = "conversation_click"
         conversation.click(timeout=8000)
+        stage = "editor_ready"
         page.locator(EDITOR_SELECTOR).wait_for(state="visible", timeout=8000)
     except PlaywrightError:
+        diagnostic(stage + "_failed")
         logger.error("无法唯一定位好友会话或消息输入框，跳过发送")
         return False
     return True
@@ -264,11 +278,13 @@ def send_message(page, message, settings, before_send=None):
             continue
 
     if not input_box:
+        diagnostic("editor_missing_or_ambiguous", matches=page.locator(EDITOR_SELECTOR).count())
         logger.error("无法找到消息输入框")
         take_screenshot(page, "input_not_found")
         return False
 
-    if (input_box.text_content() or "").strip():
+    if editor_text(input_box.text_content()):
+        diagnostic("existing_draft")
         logger.error("会话输入框已有内容，保留原草稿并跳过")
         return False
 
@@ -300,21 +316,28 @@ def send_message(page, message, settings, before_send=None):
     # 发送前停顿
     human_pause(settings)
 
-    if (input_box.text_content() or "").strip() != message:
+    if editor_text(input_box.text_content()) != message:
+        diagnostic("input_text_mismatch")
         logger.error("输入框内容与待发送消息不一致")
         return False
 
     # 发送：按Enter（抖音私信默认Enter发送）
     if before_send is not None and not before_send():
         input_box.fill("")
+        diagnostic("send_cancelled_before_enter")
         return None
     input_box.press("Enter")
     try:
-        page.wait_for_function("(editor) => !editor.textContent.trim()", arg=input_box.element_handle(), timeout=5000)
+        page.wait_for_function(
+            "selector => { const editor = document.querySelector(selector); return editor && !editor.textContent.replace(/[\\u200B\\uFEFF]/g, '').trim(); }",
+            arg=EDITOR_SELECTOR, timeout=5000,
+        )
         matching_messages.nth(existing_messages).wait_for(state="visible", timeout=5000)
     except PlaywrightTimeoutError:
+        diagnostic("send_confirmation_timeout")
         logger.error("未在会话中确认新消息，避免重复发送，本次不重试")
         return False
+    diagnostic("message_confirmed")
     logger.info("已在会话中看到新消息")
     return True
 
@@ -390,7 +413,7 @@ def open_chat_page(page, timeout):
         return RunStatus.CHAT_UNAVAILABLE
 
 
-def run(recipient, *, all_enabled=False):
+def run(recipient, *, all_enabled=False, diagnose=False):
     logger.info("=" * 50)
     logger.info("抖音自动续火花任务开始")
     logger.info("=" * 50)
@@ -440,6 +463,16 @@ def run(recipient, *, all_enabled=False):
                 return status
 
             if check_only:
+                if diagnose:
+                    if not friends:
+                        return RunStatus.INVALID_RECIPIENT
+                    if not search_and_open_chat(page, friends[0]["name"]):
+                        diagnostic("conversation_preflight_failed")
+                        return RunStatus.SEND_FAILED
+                    result = send_message(page, build_message(settings), settings, before_send=lambda: False)
+                    diagnostic("input_preflight", passed=int(result is None))
+                    return RunStatus.OK if result is None else RunStatus.SEND_FAILED
+                diagnostic("login_passed")
                 logger.info("登录检查通过，已打开私信列表")
                 return RunStatus.OK
 
@@ -487,11 +520,13 @@ def run(recipient, *, all_enabled=False):
                         logger.error("任务已跨日，结束本次发送")
                         return RunStatus.SEND_FAILED
                     if state.was_attempted(friend_name):
+                        diagnostic("already_attempted", recipient=i + 1)
                         logger.info("此好友今日已有发送记录，跳过")
                         continue
 
                     # 搜索并打开聊天
                     if not search_and_open_chat(page, friend_name):
+                        diagnostic("conversation_open_failed", recipient=i + 1)
                         logger.error(f"跳过 {friend_name}: 无法打开聊天")
                         fail_count += 1
                         continue
@@ -514,10 +549,12 @@ def run(recipient, *, all_enabled=False):
                         fail_count += 1
 
                 except PlaywrightTimeoutError:
+                    diagnostic("recipient_timeout", recipient=i + 1)
                     logger.error(f"处理 {friend_name} 超时")
                     fail_count += 1
                     take_screenshot(page, f"{friend_name}_timeout")
                 except Exception as e:
+                    diagnostic("recipient_exception", recipient=i + 1)
                     logger.error(f"处理 {friend_name} 出错: {e}", exc_info=True)
                     fail_count += 1
                     take_screenshot(page, f"{friend_name}_error")
@@ -532,6 +569,7 @@ def run(recipient, *, all_enabled=False):
                     time.sleep(delay)
 
             logger.info("\n" + "=" * 50)
+            diagnostic("run_finished", confirmed=success_count, failed=fail_count)
             logger.info(f"任务完成！成功: {success_count}, 失败: {fail_count}")
             logger.info("=" * 50)
             return RunStatus.SEND_FAILED if fail_count else RunStatus.OK
@@ -552,5 +590,6 @@ if __name__ == "__main__":
         help="0 只检查登录（默认），正整数对应启用好友的配置顺序",
     )
     mode.add_argument("--all-enabled", action="store_true", help="在发送窗口内处理所有已启用好友")
+    mode.add_argument("--diagnose", action="store_true", help="检查首个会话输入，发送前取消并清除测试文本")
     args = parser.parse_args()
-    sys.exit(run(args.recipient_index, all_enabled=args.all_enabled))
+    sys.exit(run(args.recipient_index, all_enabled=args.all_enabled, diagnose=args.diagnose))
