@@ -533,10 +533,15 @@ def run(recipient, *, all_enabled=False, diagnose=False):
 
                     # 搜索并打开聊天
                     if not search_and_open_chat(page, friend_name):
-                        diagnostic("conversation_open_failed", recipient=i + 1)
-                        logger.error(f"跳过 {friend_name}: 无法打开聊天")
-                        fail_count += 1
-                        continue
+                        # 仅重试尚未输入/发送的会话选择，刷新后重新验证登录。
+                        status = open_chat_page(page, settings["browser"]["timeout_ms"])
+                        diagnostic("conversation_recheck", recipient=i + 1, status=int(status))
+                        if status != RunStatus.OK:
+                            return status
+                        if not search_and_open_chat(page, friend_name):
+                            diagnostic("conversation_open_failed", recipient=i + 1)
+                            fail_count += 1
+                            continue
 
                     # 生成消息
                     message = build_message(settings)
@@ -560,6 +565,10 @@ def run(recipient, *, all_enabled=False, diagnose=False):
                     logger.error(f"处理 {friend_name} 超时")
                     fail_count += 1
                     take_screenshot(page, f"{friend_name}_timeout")
+                    status = open_chat_page(page, settings["browser"]["timeout_ms"])
+                    diagnostic("session_recheck", status=int(status))
+                    if status != RunStatus.OK:
+                        return status
                 except Exception as e:
                     diagnostic("recipient_exception", recipient=i + 1)
                     logger.error(f"处理 {friend_name} 出错: {e}", exc_info=True)
