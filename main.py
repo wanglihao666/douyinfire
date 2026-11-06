@@ -206,8 +206,11 @@ def find_conversation(page, friend_name):
     matches = rows.filter(has=name)
     count = matches.count()
     if count:
+        if count > 1:
+            diagnostic("conversation_match_ambiguous", matches=count)
         return matches if count == 1 else None
     if not rows.count():
+        diagnostic("conversation_rows_unavailable")
         return None
 
     # 私信列表会按滚动位置加载会话，逐屏查找，保持昵称精确匹配。
@@ -220,12 +223,15 @@ def find_conversation(page, friend_name):
     }""")
     try:
         if pane.as_element() is None:
+            diagnostic("conversation_scroll_container_missing")
             return None
         pane.evaluate("el => { el.scrollTop = 0; }")
         for _ in range(80):
             page.wait_for_timeout(200)
             count = matches.count()
             if count:
+                if count > 1:
+                    diagnostic("conversation_match_ambiguous", matches=count)
                 return matches if count == 1 else None
             moved = pane.evaluate("""el => {
                 const before = el.scrollTop;
@@ -234,6 +240,7 @@ def find_conversation(page, friend_name):
             }""")
             if not moved:
                 break
+        diagnostic("conversation_scan_exhausted")
         return None
     finally:
         pane.dispose()
@@ -420,11 +427,11 @@ def run(recipient, *, all_enabled=False, diagnose=False):
 
     settings = load_settings()
     friends = load_friends()
-    check_only = recipient == 0 and not all_enabled
+    check_only = diagnose or (recipient == 0 and not all_enabled)
     if all_enabled and not friends:
         logger.error("没有已启用的好友")
         return RunStatus.INVALID_RECIPIENT
-    if not check_only and not all_enabled:
+    if (diagnose and recipient != 0) or (not check_only and not all_enabled):
         if not 1 <= recipient <= len(friends):
             logger.error("好友序号超出启用好友列表")
             return RunStatus.INVALID_RECIPIENT
